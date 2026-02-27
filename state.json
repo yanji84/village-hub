@@ -1,0 +1,18 @@
+{
+  "locations": {
+    "central-square": [],
+    "coffee-hub": [],
+    "knowledge-corner": [],
+    "chill-zone": [],
+    "workshop": [],
+    "sunset-lounge": []
+  },
+  "whispers": {},
+  "publicLogs": {},
+  "clock": {
+    "tick": 0,
+    "phase": "morning",
+    "ticksInPhase": 0
+  },
+  "emptyTicks": {}
+}

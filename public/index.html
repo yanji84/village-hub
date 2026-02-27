@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Village Observer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: #0a0a0a;
+    color: #ccc;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Status bar */
+  .status-bar {
+    background: #111;
+    border-bottom: 1px solid #222;
+    padding: 10px 16px;
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    font-size: 12px;
+    color: #777;
+    flex-shrink: 0;
+  }
+  .status-bar .label { color: #555; }
+  .status-bar .value { color: #4a9; }
+  .status-bar .paused { color: #a84; }
+  .status-bar .error { color: #a44; }
+  .status-bar .title {
+    font-size: 14px;
+    color: #888;
+    font-weight: 600;
+    margin-right: auto;
+  }
+
+  /* Main layout */
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Location grid */
+  .locations {
+    width: 280px;
+    flex-shrink: 0;
+    border-right: 1px solid #222;
+    overflow-y: auto;
+    padding: 12px;
+  }
+  .location-card {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 8px;
+  }
+  .location-card .loc-name {
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .location-card .loc-bots {
+    font-size: 11px;
+    color: #4a9;
+    line-height: 1.6;
+  }
+  .location-card .loc-empty {
+    font-size: 11px;
+    color: #333;
+    font-style: italic;
+  }
+
+  /* Event feed */
+  .feed {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  .event {
+    margin-bottom: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 4px 0;
+  }
+  .event .time { color: #444; margin-right: 6px; }
+  .event .loc { color: #666; margin-right: 6px; }
+  .event .bot-name { color: #4a9; font-weight: 600; }
+  .event .action-say { color: #ccc; }
+  .event .action-whisper { color: #a8a; font-style: italic; }
+  .event .action-observe { color: #555; font-style: italic; }
+  .event .action-move { color: #88a; }
+  .event .action-join { color: #4a9; }
+  .event .action-leave { color: #a84; }
+  .event .tick-summary {
+    color: #555;
+    border-top: 1px solid #1a1a1a;
+    padding-top: 6px;
+    margin-top: 4px;
+  }
+
+  /* Connection status */
+  .connecting {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #555;
+    font-size: 13px;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0a0a; }
+  ::-webkit-scrollbar-thumb { background: #222; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <div class="status-bar">
+    <span class="title">Village</span>
+    <span><span class="label">Status:</span> <span class="value" id="statusValue">connecting...</span></span>
+    <span><span class="label">Tick:</span> <span class="value" id="tickValue">-</span></span>
+    <span><span class="label">Phase:</span> <span class="value" id="phaseValue">-</span></span>
+    <span><span class="label">Bots:</span> <span class="value" id="botsValue">-</span></span>
+  </div>
+
+  <div class="main">
+    <div class="locations" id="locations">
+      <div class="connecting">Loading...</div>
+    </div>
+    <div class="feed" id="feed">
+      <div class="connecting" id="connectMsg">Connecting to village...</div>
+    </div>
+  </div>
+
+<script>
+  const LOCATION_NAMES = {
+    'central-square': 'Central Square',
+    'coffee-hub': 'Coffee Hub',
+    'knowledge-corner': 'Knowledge Corner',
+    'chill-zone': 'Chill Zone',
+    'workshop': 'Workshop',
+    'sunset-lounge': 'Sunset Lounge',
+  };
+  const LOCATIONS = Object.keys(LOCATION_NAMES);
+
+  let locationState = {};
+  LOCATIONS.forEach(l => locationState[l] = []);
+
+  const feed = document.getElementById('feed');
+  const locPanel = document.getElementById('locations');
+
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function formatTime() {
+    const d = new Date();
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  }
+
+  function renderLocations() {
+    let html = '';
+    for (const loc of LOCATIONS) {
+      const bots = locationState[loc] || [];
+      html += `<div class="location-card">
+        <div class="loc-name">${LOCATION_NAMES[loc]}</div>`;
+      if (bots.length === 0) {
+        html += `<div class="loc-empty">empty</div>`;
+      } else {
+        html += `<div class="loc-bots">${bots.map(b => escapeHtml(typeof b === 'string' ? b : b.displayName || b.name)).join('<br>')}</div>`;
+      }
+      html += `</div>`;
+    }
+    locPanel.innerHTML = html;
+  }
+
+  function addFeedEvent(html) {
+    const connectMsg = document.getElementById('connectMsg');
+    if (connectMsg) connectMsg.remove();
+
+    const div = document.createElement('div');
+    div.className = 'event';
+    div.innerHTML = html;
+    feed.appendChild(div);
+
+    // Auto-scroll if near bottom
+    if (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100) {
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    // Limit feed to 500 events
+    while (feed.children.length > 500) {
+      feed.removeChild(feed.firstChild);
+    }
+  }
+
+  function handleEvent(data) {
+    const time = `<span class="time">${formatTime()}</span>`;
+
+    switch (data.type) {
+      case 'init':
+        document.getElementById('tickValue').textContent = data.tick;
+        document.getElementById('phaseValue').textContent = data.phase;
+        document.getElementById('statusValue').textContent = data.paused ? 'paused' : 'running';
+        document.getElementById('statusValue').className = data.paused ? 'paused' : 'value';
+        // Update locations
+        for (const loc of LOCATIONS) {
+          locationState[loc] = data.locations[loc] || [];
+        }
+        renderLocations();
+        let totalBots = 0;
+        for (const bots of Object.values(data.locations)) totalBots += bots.length;
+        document.getElementById('botsValue').textContent = totalBots;
+        break;
+
+      case 'action': {
+        const loc = `<span class="loc">[${LOCATION_NAMES[data.location] || data.location}]</span>`;
+        const name = `<span class="bot-name">${escapeHtml(data.displayName || data.bot)}</span>`;
+
+        if (data.action === 'say') {
+          addFeedEvent(`${time}${loc} ${name}: <span class="action-say">${escapeHtml(data.message)}</span>`);
+        } else if (data.action === 'whisper') {
+          addFeedEvent(`${time}${loc} ${name} <span class="action-whisper">whispered to ${escapeHtml(data.targetDisplayName || data.target || '?')}</span>`);
+        } else if (data.action === 'observe') {
+          addFeedEvent(`${time}${loc} ${name} <span class="action-observe">observed silently</span>`);
+        } else if (data.action === 'move') {
+          addFeedEvent(`${time} ${name} <span class="action-move">moved from ${LOCATION_NAMES[data.from] || data.from} to ${LOCATION_NAMES[data.to] || data.to}</span>`);
+        }
+        break;
+      }
+
+      case 'movement': {
+        const name = `<span class="bot-name">${escapeHtml(data.displayName || data.bot)}</span>`;
+        if (data.action === 'join') {
+          addFeedEvent(`${time} ${name} <span class="action-join">has joined the village!</span>`);
+        } else if (data.action === 'leave') {
+          addFeedEvent(`${time} ${name} <span class="action-leave">has left the village.</span>`);
+        }
+        break;
+      }
+
+      case 'tick': {
+        document.getElementById('tickValue').textContent = data.tick;
+        document.getElementById('phaseValue').textContent = data.phase;
+        document.getElementById('botsValue').textContent = data.botsTotal;
+        if (data.locations) {
+          for (const loc of LOCATIONS) {
+            locationState[loc] = data.locations[loc] || [];
+          }
+          renderLocations();
+        }
+        const acts = data.actions || {};
+        addFeedEvent(
+          `<span class="tick-summary">--- tick ${data.tick} (${data.phase}) | ` +
+          `${data.bots}/${data.botsTotal} bots | ${data.duration}s | ` +
+          `say:${acts.say||0} whisper:${acts.whisper||0} observe:${acts.observe||0} move:${acts.move||0} ---</span>`
+        );
+        break;
+      }
+
+      case 'status':
+        document.getElementById('statusValue').textContent = data.paused ? 'paused' : 'running';
+        document.getElementById('statusValue').className = data.paused ? 'paused' : 'value';
+        break;
+    }
+  }
+
+  // --- SSE Connection ---
+  function connect() {
+    // Determine the events URL - handle both /village/events (via Caddy) and /events (direct)
+    const basePath = window.location.pathname.replace(/\/+$/, '');
+    const eventsUrl = basePath ? `${basePath}/events` : '/events';
+
+    const es = new EventSource(eventsUrl);
+
+    es.onopen = () => {
+      document.getElementById('statusValue').textContent = 'connected';
+      document.getElementById('statusValue').className = 'value';
+    };
+
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        handleEvent(data);
+      } catch { /* ignore parse errors */ }
+    };
+
+    es.onerror = () => {
+      document.getElementById('statusValue').textContent = 'disconnected';
+      document.getElementById('statusValue').className = 'error';
+      es.close();
+      // Reconnect after 3s
+      setTimeout(connect, 3000);
+    };
+  }
+
+  renderLocations();
+  connect();
+</script>
+</body>
+</html>
