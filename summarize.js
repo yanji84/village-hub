@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const paths = require('../lib/paths');
 
-const SIZE_THRESHOLD = 5 * 1024 * 1024; // 5MB
+const SIZE_THRESHOLD = 50 * 1024; // 50KB
 const RECENT_ENTRIES_KEEP = 20;
 const MIN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const HAIKU_MODEL = 'claude-haiku-4-5-20251001';

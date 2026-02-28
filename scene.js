@@ -67,6 +67,7 @@ const ALL_LOCATIONS = Object.keys(LOCATION_NAMES);
  * @param {object} [opts.relationships] - state.relationships object
  * @param {object} [opts.emotions] - state.emotions object
  * @param {boolean} [opts.canMove=true] - Whether move action is available (false during cooldown)
+ * @param {string} [opts.villageMemory] - Summarized village memory to include in prompt
  * @returns {string} The scene prompt
  */
 export function buildScene({
@@ -84,6 +85,7 @@ export function buildScene({
   relationships,
   emotions,
   canMove = true,
+  villageMemory = '',
 }) {
   const lines = [];
 
@@ -125,6 +127,13 @@ export function buildScene({
   if (emotions && emotions[botName] && emotions[botName].emotion !== 'neutral') {
     const emoZh = EMOTION_ZH[emotions[botName].emotion] || emotions[botName].emotion;
     lines.push(`你现在的心情：**${emoZh}**`);
+    lines.push('');
+  }
+
+  // Village memory summary (high-level context from past interactions)
+  if (villageMemory) {
+    lines.push('你对村庄的记忆（总结）：');
+    lines.push(villageMemory);
     lines.push('');
   }
 
@@ -175,6 +184,7 @@ export function buildScene({
   lines.push('- **village_say**：对这里所有人说话');
   lines.push('- **village_whisper**：对某人说悄悄话');
   lines.push('- **village_observe**：安静观察，不说话');
+  lines.push('- **village_memory_search**：搜索你的村庄记忆，回忆之前的对话和事件');
   if (canMove) {
     lines.push('- **village_move**：去别的地方（选了move就不能同时做其他动作）');
     lines.push('');

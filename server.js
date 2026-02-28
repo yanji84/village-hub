@@ -9,8 +9,8 @@
  */
 
 import { createServer } from 'node:http';
-import { readFile, writeFile, rename, copyFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { readFile, writeFile, rename, copyFile, mkdir, readdir } from 'node:fs/promises';
+import { createReadStream, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -55,6 +55,11 @@ const EMPTY_CLEAR_TICKS = 3;
 const STATE_FILE = join(__dirname, 'state.json');
 const USAGE_FILE = join(paths.PROJECT_DIR, 'api-router', 'usage.json');
 const ADMIN_TOKENS_FILE = join(paths.PROJECT_DIR, 'portal', 'admin-tokens.json');
+const LOGS_DIR = join(__dirname, 'logs');
+
+// --- Event log file (JSONL, one file per day) ---
+let logDate = '';   // 'YYYY-MM-DD'
+let logFile = '';   // full path to current day's .jsonl
 
 // PHASES imported from logic.js via advanceClockImpl
 
@@ -321,6 +326,19 @@ function broadcastEvent(event) {
       observers.delete(obs);
     }
   }
+
+  // Persist to JSONL log file
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== logDate) {
+      logDate = today;
+      logFile = join(LOGS_DIR, `${today}.jsonl`);
+    }
+    const line = JSON.stringify({ ...event, _ts: new Date().toISOString() }) + '\n';
+    appendFileSync(logFile, line);
+  } catch (err) {
+    console.error(`[village] Failed to write event log: ${err.message}`);
+  }
 }
 
 // --- Advance clock (delegated to logic.js) ---
@@ -354,6 +372,28 @@ async function tick() {
     const dailyCosts = new Map();
     for (const botName of participants.keys()) {
       dailyCosts.set(botName, await readBotDailyCost(botName));
+    }
+
+    // Read village memory summaries for all participants
+    const VILLAGE_MEMORY_CAP = 1500;
+    const villageSummaries = new Map(); // botName → summary string
+    for (const botName of participants.keys()) {
+      try {
+        const memPath = join(paths.memoryDir(botName), 'village.md');
+        const content = await readFile(memPath, 'utf-8');
+        // Extract "## Village History (summarized)" section
+        const start = content.indexOf('## Village History (summarized)');
+        if (start !== -1) {
+          const afterHeader = content.indexOf('\n', start);
+          const nextSection = content.indexOf('\n## ', afterHeader + 1);
+          const summaryText = nextSection !== -1
+            ? content.slice(afterHeader + 1, nextSection).trim()
+            : content.slice(afterHeader + 1).trim();
+          if (summaryText) {
+            villageSummaries.set(botName, summaryText.slice(0, VILLAGE_MEMORY_CAP));
+          }
+        }
+      } catch { /* no village.md or no summary yet */ }
     }
 
     // Build scenes and collect actions per location
@@ -416,6 +456,7 @@ async function tick() {
           relationships: state.relationships,
           emotions: state.emotions,
           canMove,
+          villageMemory: villageSummaries.get(botName) || '',
         });
 
         allSceneRequests.push({ botName, port, conversationId, scene, loc });
@@ -781,6 +822,50 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (path === '/api/logs' && req.method === 'GET') {
+    const authedBot = await validateObserverAuth(req);
+    if (!authedBot) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+
+    const beforeTick = url.searchParams.has('before') ? parseInt(url.searchParams.get('before'), 10) : Infinity;
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
+
+    try {
+      // List log files sorted descending (newest first)
+      const files = (await readdir(LOGS_DIR)).filter(f => f.endsWith('.jsonl')).sort().reverse();
+      const events = [];
+      let hasMore = false;
+
+      outer:
+      for (const file of files) {
+        const raw = await readFile(join(LOGS_DIR, file), 'utf-8');
+        const lines = raw.trim().split('\n').filter(Boolean);
+        // Iterate in reverse (newest first within file)
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const ev = JSON.parse(lines[i]);
+            if (ev.tick !== undefined && ev.tick >= beforeTick) continue;
+            if (events.length >= limit) { hasMore = true; break outer; }
+            events.push(ev);
+          } catch { /* skip malformed lines */ }
+        }
+      }
+
+      // Return oldest-first order for client rendering
+      events.reverse();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events, hasMore }));
+    } catch (err) {
+      // No log files yet — return empty
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events: [], hasMore: false }));
+    }
+    return;
+  }
+
   if (path === '/pause' && req.method === 'POST') {
     paused = true;
     console.log('[village] Paused');
@@ -869,6 +954,9 @@ if (!VILLAGE_SECRET) {
   console.error('[village] Set VILLAGE_SECRET in environment or enable village via admin page.');
   process.exit(1);
 }
+
+// Ensure logs directory exists
+await mkdir(LOGS_DIR, { recursive: true });
 
 await loadState();
 await recoverParticipants();
