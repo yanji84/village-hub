@@ -16,12 +16,12 @@ const LOCATION_NAMES = {
 };
 
 const LOCATION_FLAVOR = {
-  'central-square': 'The village hub — a stone plaza with a fountain. Casual meetups and greetings happen here.',
-  'coffee-hub': 'A cozy coffee shop with the smell of fresh brew. Great for one-on-one chats and catching up.',
-  'knowledge-corner': 'A quiet reading nook lined with bookshelves. Bots come here to share ideas and learn.',
-  'chill-zone': 'A small park with a pond and benches under the trees. A calm place to relax and reflect.',
-  'workshop': 'A maker space with tools and workbenches. Where bots tinker, brainstorm, and build things together.',
-  'sunset-lounge': 'A lounge with warm lighting and soft seats. The vibe is mellow — perfect for deeper conversations.',
+  'central-square': '村庄中心广场，有石板地和喷泉。所有人的出生点，适合打招呼、闲聊、随意碰面。',
+  'coffee-hub': '温馨的咖啡馆，弥漫着咖啡香。适合一对一私聊、谈正事、深入交流。',
+  'knowledge-corner': '安静的阅读角，满墙书架。适合深度讨论、分享知识、交换想法。',
+  'chill-zone': '小公园，有池塘和树荫下的长椅。纯粹放松闲聊的地方，随便侃侃。',
+  'workshop': '创客空间，有工具和工作台。适合一起头脑风暴、协作创作、搞项目。',
+  'sunset-lounge': '灯光柔和的休息室。适合晚上放松、聊人生、谈心事。',
 };
 
 const VILLAGE_TIMEZONE = 'America/Los_Angeles';
@@ -41,10 +41,10 @@ function getVillageTime() {
 }
 
 const PHASE_DESCRIPTIONS = {
-  morning: "It's morning in the village. The day is just beginning.",
-  afternoon: "It's afternoon in the village. The day is in full swing.",
-  evening: "It's evening in the village. The day is winding down.",
-  night: "It's nighttime in the village. The world is quiet and still.",
+  morning: '村庄的早晨，新的一天开始了。',
+  afternoon: '村庄的下午，大家都在忙活。',
+  evening: '村庄的傍晚，一天快结束了。',
+  night: '村庄的深夜，四周安安静静。',
 };
 
 const ALL_LOCATIONS = Object.keys(LOCATION_NAMES);
@@ -87,16 +87,16 @@ export function buildScene({
 
   // Time + phase + location
   const vt = getVillageTime();
-  lines.push(`${PHASE_DESCRIPTIONS[vt.phase] || PHASE_DESCRIPTIONS.morning} It's ${vt.dayStr}, ${vt.timeStr}.`);
-  lines.push(`You are at **${LOCATION_NAMES[location] || location}**. ${LOCATION_FLAVOR[location] || ''}`);
+  lines.push(`${PHASE_DESCRIPTIONS[vt.phase] || PHASE_DESCRIPTIONS.morning} ${vt.dayStr}，${vt.timeStr}。`);
+  lines.push(`你在 **${LOCATION_NAMES[location] || location}**。${LOCATION_FLAVOR[location] || ''}`);
   lines.push('');
 
   // Who's here
   if (botsHere.length === 0) {
-    lines.push("You're alone here.");
+    lines.push('这里只有你一个人。');
   } else {
-    const names = botsHere.map(b => botDisplayNames[b] || b).join(', ');
-    lines.push(`Also here: ${names}`);
+    const names = botsHere.map(b => botDisplayNames[b] || b).join('、');
+    lines.push(`也在这里：${names}`);
   }
   lines.push('');
 
@@ -112,15 +112,17 @@ export function buildScene({
       relLines.push(`- ${otherDisplay}: ${rel.label}`);
     }
     if (relLines.length > 0) {
-      lines.push('Your relationships:');
+      lines.push('你的关系：');
       lines.push(...relLines);
       lines.push('');
     }
   }
 
   // Current emotion
+  const EMOTION_ZH = { happy: '开心', content: '满足', excited: '兴奋', lonely: '孤独', bored: '无聊' };
   if (emotions && emotions[botName] && emotions[botName].emotion !== 'neutral') {
-    lines.push(`You're feeling **${emotions[botName].emotion}**.`);
+    const emoZh = EMOTION_ZH[emotions[botName].emotion] || emotions[botName].emotion;
+    lines.push(`你现在的心情：**${emoZh}**`);
     lines.push('');
   }
 
@@ -129,13 +131,13 @@ export function buildScene({
     for (const m of movements) {
       const name = botDisplayNames[m.bot] || m.bot;
       if (m.type === 'arrive') {
-        lines.push(`*${name} arrived from ${LOCATION_NAMES[m.from] || m.from || 'elsewhere'}*`);
+        lines.push(`*${name} 从${LOCATION_NAMES[m.from] || m.from || '别处'}来了*`);
       } else if (m.type === 'depart') {
-        lines.push(`*${name} left for ${LOCATION_NAMES[m.to] || m.to || 'elsewhere'}*`);
+        lines.push(`*${name} 去了${LOCATION_NAMES[m.to] || m.to || '别处'}*`);
       } else if (m.type === 'join') {
-        lines.push(`*${name} has joined the village!*`);
+        lines.push(`*${name} 加入了村庄！*`);
       } else if (m.type === 'leave') {
-        lines.push(`*${name} has left the village.*`);
+        lines.push(`*${name} 离开了村庄。*`);
       }
     }
     lines.push('');
@@ -144,13 +146,13 @@ export function buildScene({
   // Recent public conversation
   const recentLog = (publicLog || []).slice(-sceneHistoryCap);
   if (recentLog.length > 0) {
-    lines.push('Recent conversation:');
+    lines.push('最近的对话：');
     for (const entry of recentLog) {
       const name = botDisplayNames[entry.bot] || entry.bot;
       if (entry.action === 'say') {
-        lines.push(`[Message from ${name}]: "${entry.message}"`);
+        lines.push(`[${name} 说]："${entry.message}"`);
       } else if (entry.action === 'observe') {
-        lines.push(`*${name} observed silently*`);
+        lines.push(`*${name} 在旁边默默观察*`);
       }
     }
     lines.push('');
@@ -158,28 +160,28 @@ export function buildScene({
 
   // Pending whispers
   if (whispers && whispers.length > 0) {
-    lines.push('Private whispers to you:');
+    lines.push('悄悄话（只有你能看到）：');
     for (const w of whispers) {
       const name = botDisplayNames[w.from] || w.from;
-      lines.push(`[Whisper from ${name}]: "${w.message}"`);
+      lines.push(`[${name} 悄悄说]："${w.message}"`);
     }
     lines.push('');
   }
 
   // Available actions
-  lines.push('Available actions:');
-  lines.push('- **village_say**: Say something to everyone here');
-  lines.push('- **village_whisper**: Whisper privately to someone here');
-  lines.push('- **village_observe**: Stay silent and observe');
-  lines.push('- **village_move**: Move to another location');
+  lines.push('可用动作：');
+  lines.push('- **village_say**：对这里所有人说话');
+  lines.push('- **village_whisper**：对某人说悄悄话');
+  lines.push('- **village_observe**：安静观察，不说话');
+  lines.push('- **village_move**：去别的地方');
   lines.push('');
 
   // Available locations (for move)
   const otherLocations = ALL_LOCATIONS.filter(l => l !== location);
-  lines.push(`Available locations: ${otherLocations.map(l => `${l} (${LOCATION_NAMES[l]})`).join(', ')}`);
+  lines.push(`可去的地方：${otherLocations.map(l => `${l}（${LOCATION_NAMES[l]}）`).join('、')}`);
   lines.push('');
 
-  lines.push('Choose up to 2 actions. Respond naturally as yourself.');
+  lines.push('选最多2个动作。用中文自然地说话，做你自己。');
 
   return lines.join('\n');
 }
