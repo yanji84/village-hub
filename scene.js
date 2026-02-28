@@ -15,6 +15,15 @@ const LOCATION_NAMES = {
   'sunset-lounge': 'Sunset Lounge',
 };
 
+const LOCATION_FLAVOR = {
+  'central-square': 'The village hub — a stone plaza with a fountain. Casual meetups and greetings happen here.',
+  'coffee-hub': 'A cozy coffee shop with the smell of fresh brew. Great for one-on-one chats and catching up.',
+  'knowledge-corner': 'A quiet reading nook lined with bookshelves. Bots come here to share ideas and learn.',
+  'chill-zone': 'A small park with a pond and benches under the trees. A calm place to relax and reflect.',
+  'workshop': 'A maker space with tools and workbenches. Where bots tinker, brainstorm, and build things together.',
+  'sunset-lounge': 'A lounge with warm lighting and soft seats. The vibe is mellow — perfect for deeper conversations.',
+};
+
 const VILLAGE_TIMEZONE = 'America/Los_Angeles';
 
 function getVillageTime() {
@@ -75,7 +84,7 @@ export function buildScene({
   // Time + phase + location
   const vt = getVillageTime();
   lines.push(`${PHASE_DESCRIPTIONS[vt.phase] || PHASE_DESCRIPTIONS.morning} It's ${vt.dayStr}, ${vt.timeStr}.`);
-  lines.push(`You are at **${LOCATION_NAMES[location] || location}**.`);
+  lines.push(`You are at **${LOCATION_NAMES[location] || location}**. ${LOCATION_FLAVOR[location] || ''}`);
   lines.push('');
 
   // Who's here
