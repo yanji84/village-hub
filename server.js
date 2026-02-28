@@ -167,14 +167,14 @@ async function discoverParticipants() {
       const port = config.gateway?.port;
       if (!port) continue;
 
-      // Health check
+      // Reachability check — try /health first, fall back to any 404 (port is alive)
       try {
         const resp = await fetch(`http://127.0.0.1:${port}/health`, {
           signal: AbortSignal.timeout(5000),
         });
-        if (!resp.ok) continue;
+        // Any HTTP response means the bot is reachable (404 = no /health route but alive)
       } catch {
-        continue; // unhealthy or unreachable
+        continue; // unreachable
       }
 
       const identity = await identityManager.read(botName);
