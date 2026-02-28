@@ -12,12 +12,18 @@ describe('buildMemoryEntry', () => {
   };
 
   it('includes location in header', () => {
-    const entry = buildMemoryEntry(baseOpts);
+    const entry = buildMemoryEntry({
+      ...baseOpts,
+      events: [{ bot: 'a', displayName: 'A', action: 'say', message: 'hi' }],
+    });
     expect(entry).toContain('## Coffee Hub');
   });
 
   it('includes formatted time in header', () => {
-    const entry = buildMemoryEntry(baseOpts);
+    const entry = buildMemoryEntry({
+      ...baseOpts,
+      events: [{ bot: 'a', displayName: 'A', action: 'say', message: 'hi' }],
+    });
     // Time format: "Feb 27, 15:30" (en-US, hour12: false)
     expect(entry).toMatch(/Feb 27/);
     expect(entry).toMatch(/15:30/);
@@ -33,14 +39,15 @@ describe('buildMemoryEntry', () => {
     expect(entry).toContain('**FriendBot** (say): "Hello world!"');
   });
 
-  it('formats observe action', () => {
+  it('skips observe action (no longer written to memory)', () => {
     const entry = buildMemoryEntry({
       ...baseOpts,
       events: [
         { bot: 'friend-bot', displayName: 'FriendBot', action: 'observe' },
       ],
     });
-    expect(entry).toContain('*FriendBot observed silently*');
+    expect(entry).toBe('');
+    expect(entry).not.toContain('observed silently');
   });
 
   it('formats move action', () => {
@@ -156,21 +163,19 @@ describe('buildMemoryEntry', () => {
       events: [
         { bot: 'bot-a', displayName: 'BotA', action: 'say', message: 'first' },
         { bot: 'bot-b', displayName: 'BotB', action: 'say', message: 'second' },
-        { bot: 'bot-c', displayName: 'BotC', action: 'observe' },
+        { bot: 'bot-c', displayName: 'BotC', action: 'move', to: 'Workshop' },
       ],
     });
     const lines = entry.split('\n');
     const firstIdx = lines.findIndex(l => l.includes('first'));
     const secondIdx = lines.findIndex(l => l.includes('second'));
-    const observeIdx = lines.findIndex(l => l.includes('observed'));
+    const moveIdx = lines.findIndex(l => l.includes('moved'));
     expect(firstIdx).toBeLessThan(secondIdx);
-    expect(secondIdx).toBeLessThan(observeIdx);
+    expect(secondIdx).toBeLessThan(moveIdx);
   });
 
-  it('returns empty body for empty events (only header)', () => {
+  it('returns empty string for empty events', () => {
     const entry = buildMemoryEntry(baseOpts);
-    const lines = entry.split('\n').filter(l => l.trim());
-    expect(lines).toHaveLength(1); // just the header
-    expect(lines[0]).toMatch(/^## Coffee Hub/);
+    expect(entry).toBe('');
   });
 });

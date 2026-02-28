@@ -81,9 +81,6 @@ export function buildMemoryEntry({ location, timestamp, events, botName }) {
         }
         // Other bots' whispers are not shown
         break;
-      case 'observe':
-        lines.push(`*${name} observed silently*`);
-        break;
       case 'move':
         lines.push(`*${name} moved to ${ev.to}*`);
         break;
@@ -98,6 +95,9 @@ export function buildMemoryEntry({ location, timestamp, events, botName }) {
         break;
     }
   }
+
+  // Skip empty entries (tick where bot only observed — no visible events)
+  if (lines.length <= 2) return '';
 
   return lines.join('\n');
 }

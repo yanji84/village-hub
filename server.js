@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 
 import { buildScene, LOCATION_NAMES, ALL_LOCATIONS, getVillageTime } from './scene.js';
 import { appendVillageMemory, buildMemoryEntry } from './memory.js';
+import { needsSummarization, summarizeVillageMemory } from './summarize.js';
 import {
   processActions,
   advanceClock as advanceClockImpl,
@@ -521,6 +522,13 @@ async function tick() {
           console.error(`[village] Failed to write memory for ${botName}: ${err.message}`);
         }
       }
+    }
+
+    // Summarize oversized village.md files (fire-and-forget, don't block tick)
+    for (const botName of participants.keys()) {
+      needsSummarization(botName).then(needed => {
+        if (needed) summarizeVillageMemory(botName);
+      }).catch(() => {});
     }
 
     // Persist state
