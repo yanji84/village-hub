@@ -404,7 +404,7 @@ function onEvent(d) {
         showBubble(d.bot, d.message);
         addLog(`${t} <span class="b">${esc(nm)}</span>: <span class="s">"${esc(d.message)}"</span>`);
       } else if (d.action==='whisper') {
-        const tgt = (sprites[d.target]||{}).dn || d.target || '?';
+        const tgt = d.targetDisplayName || (sprites[d.target]||{}).dn || d.target || '?';
         showBubble(d.bot, `(whispers to ${tgt})`, true);
         addLog(`${t} <span class="b">${esc(nm)}</span> <span class="w">whispered to ${esc(tgt)}</span>`);
       } else if (d.action==='observe') {

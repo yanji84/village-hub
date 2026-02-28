@@ -423,6 +423,8 @@ async function tick() {
       }
 
       for (const ev of events) {
+        const extra = {};
+        if (ev.target) extra.targetDisplayName = displayNames[ev.target] || ev.target;
         broadcastEvent({
           type: 'action',
           tick: tickNum,
@@ -432,6 +434,7 @@ async function tick() {
           bot: botName,
           displayName: displayNames[botName],
           ...ev,
+          ...extra,
         });
       }
     }
