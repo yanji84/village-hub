@@ -1,5 +1,32 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import villagePlugin from '../../../templates/plugins/village/index.js';
+
+// --- Mock WebSocket that never connects (keeps RPC hanging for action capture tests) ---
+
+const _OriginalWebSocket = globalThis.WebSocket;
+
+class HangingWebSocket {
+  constructor() {
+    this._listeners = {};
+    // Fire error after 30ms — long enough for hooks to fire (at 10ms),
+    // short enough to not hit test timeout. This makes rpcPromise reject
+    // via .catch(), allowing the handler to return.
+    this._errorTimer = setTimeout(() => {
+      for (const fn of (this._listeners['error'] || [])) {
+        fn(new Error('mock ws error'));
+      }
+    }, 30);
+  }
+  addEventListener(event, fn) {
+    if (!this._listeners[event]) this._listeners[event] = [];
+    this._listeners[event].push(fn);
+  }
+  send() {}
+  close() {
+    clearTimeout(this._errorTimer);
+    for (const fn of (this._listeners['close'] || [])) fn();
+  }
+}
 
 // --- Mock API factory ---
 
@@ -43,6 +70,36 @@ function createMockApi() {
   };
 }
 
+// --- Helper: activate plugin with hanging WebSocket so RPC doesn't resolve ---
+
+function activateWithHangingWs() {
+  globalThis.WebSocket = HangingWebSocket;
+  const api = createMockApi();
+  delete process.env.VILLAGE_SECRET;
+  villagePlugin.activate(api);
+  return api;
+}
+
+function createStreamReq(body) {
+  const raw = typeof body === 'string' ? body : JSON.stringify(body);
+  const chunks = [Buffer.from(raw)];
+  return {
+    method: 'POST',
+    headers: {},
+    [Symbol.asyncIterator]() {
+      let i = 0;
+      return { next() {
+        if (i < chunks.length) return { done: false, value: chunks[i++] };
+        return { done: true };
+      }};
+    },
+  };
+}
+
+function createCapturingRes() {
+  return { writeHead: vi.fn(), end: vi.fn() };
+}
+
 // --- Activate plugin ---
 
 describe('Village Plugin', () => {
@@ -53,6 +110,10 @@ describe('Village Plugin', () => {
     // Clear VILLAGE_SECRET for most tests
     delete process.env.VILLAGE_SECRET;
     villagePlugin.activate(api);
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = _OriginalWebSocket;
   });
 
   // --- PLG-002: Tool registration ---
@@ -349,6 +410,281 @@ describe('Village Plugin', () => {
       const res = createMockRes();
       await route.handler(req, res);
       expect(res._status()).toBe(413);
+    });
+  });
+
+  // --- Sanitize (tested via action capture) ---
+  // Sanitize is a closure inside activate(), so we test it through
+  // the before_tool_call hook's action capture path.
+  // We mock WebSocket to prevent callGatewayRpc from resolving the pending
+  // entry before our hook fires.
+
+  describe('sanitize (via action capture)', () => {
+    it('strips control characters from village_say message', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:sanitize-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('before_tool_call', {
+        name: 'village_say',
+        params: { message: 'Hello\x00\x01\x02World\x7F!' },
+      }, { sessionKey: `agent:main:${conversationId}` });
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions[0].tool).toBe('village_say');
+      expect(responseBody.actions[0].params.message).toBe('HelloWorld!');
+    });
+
+    it('truncates message to MAX_MESSAGE_LENGTH (500)', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:truncate-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('before_tool_call', {
+        name: 'village_say',
+        params: { message: 'A'.repeat(1000) },
+      }, { sessionKey: `agent:main:${conversationId}` });
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions[0].params.message).toHaveLength(500);
+    });
+
+    it('returns empty string for non-string input', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:nonstring-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('before_tool_call', {
+        name: 'village_say',
+        params: { message: null },
+      }, { sessionKey: `agent:main:${conversationId}` });
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions[0].params.message).toBe('');
+    });
+
+    it('preserves newlines and tabs', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:newlines-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('before_tool_call', {
+        name: 'village_say',
+        params: { message: 'line1\nline2\ttab' },
+      }, { sessionKey: `agent:main:${conversationId}` });
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions[0].params.message).toBe('line1\nline2\ttab');
+    });
+  });
+
+  // --- Action capture: MAX_ACTIONS_PER_TURN ---
+
+  describe('action capture — MAX_ACTIONS_PER_TURN', () => {
+    it('captures at most 2 actions per turn', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:cap-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      const sessionKey = `agent:main:${conversationId}`;
+      api2._fireHook('before_tool_call',
+        { name: 'village_say', params: { message: 'first' } }, { sessionKey });
+      api2._fireHook('before_tool_call',
+        { name: 'village_say', params: { message: 'second' } }, { sessionKey });
+      api2._fireHook('before_tool_call',
+        { name: 'village_say', params: { message: 'third-dropped' } }, { sessionKey });
+
+      api2._fireHook('agent_end', {}, { sessionKey });
+      await handlerPromise;
+
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions).toHaveLength(2);
+      expect(responseBody.actions[0].params.message).toBe('first');
+      expect(responseBody.actions[1].params.message).toBe('second');
+    });
+  });
+
+  // --- Action capture: whisper and move sanitization ---
+
+  describe('action capture — whisper and move params', () => {
+    it('captures whisper with sanitized bot_id and message', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:whisper-cap-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('before_tool_call', {
+        name: 'village_whisper',
+        params: { bot_id: 'friend\x00bot', message: 'secret\x01msg' },
+      }, { sessionKey: `agent:main:${conversationId}` });
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions[0].tool).toBe('village_whisper');
+      expect(responseBody.actions[0].params.bot_id).toBe('friendbot');
+      expect(responseBody.actions[0].params.message).toBe('secretmsg');
+    });
+
+    it('captures move with sanitized location (truncated to 100)', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:move-cap-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('before_tool_call', {
+        name: 'village_move',
+        params: { location: 'x'.repeat(200) },
+      }, { sessionKey: `agent:main:${conversationId}` });
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions[0].tool).toBe('village_move');
+      expect(responseBody.actions[0].params.location).toHaveLength(100);
+    });
+  });
+
+  // --- /village endpoint: default to observe when no actions ---
+
+  describe('/village endpoint — observe fallback', () => {
+    it('returns village_observe when agent produces no village actions', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:noaction-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(res.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+      expect(responseBody.actions).toEqual([{ tool: 'village_observe', params: {} }]);
+    });
+  });
+
+  // --- /village endpoint: missing gateway config ---
+
+  describe('/village endpoint — gateway config errors', () => {
+    it('returns 500 when gateway port is not configured', async () => {
+      const api2 = createMockApi();
+      api2.config.gateway.port = null;
+      delete process.env.VILLAGE_SECRET;
+      villagePlugin.activate(api2);
+      const route = api2._getHttpRoute();
+      const req = createStreamReq({ conversationId: 'village:test:noport-1', scene: 'test' });
+      const res = createCapturingRes();
+
+      await route.handler(req, res);
+      expect(res.writeHead).toHaveBeenCalledWith(500, expect.any(Object));
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.error).toContain('port/token');
+    });
+  });
+
+  // --- agent_end hook — resolves pending ---
+
+  describe('agent_end — pending resolution', () => {
+    it('resolves pending actions on agent_end for village session', async () => {
+      const api2 = activateWithHangingWs();
+      const route = api2._getHttpRoute();
+      const conversationId = 'village:test:agentend-1';
+      const req = createStreamReq({ conversationId, scene: 'test' });
+      const res = createCapturingRes();
+
+      const handlerPromise = route.handler(req, res);
+      await new Promise(r => setTimeout(r, 10));
+
+      api2._fireHook('before_tool_call', {
+        name: 'village_say',
+        params: { message: 'hi' },
+      }, { sessionKey: `agent:main:${conversationId}` });
+
+      api2._fireHook('agent_end', {}, {
+        sessionKey: `agent:main:${conversationId}`,
+      });
+
+      await handlerPromise;
+      const responseBody = JSON.parse(res.end.mock.calls[0][0]);
+      expect(responseBody.actions).toHaveLength(1);
+      expect(responseBody.actions[0].params.message).toBe('hi');
+    });
+
+    it('ignores agent_end for non-village sessions', () => {
+      const result = api._fireHook('agent_end', {}, {
+        sessionKey: 'agent:main:whatsapp:+1234567890',
+      });
+      expect(result).toBeUndefined();
+    });
+
+    it('ignores agent_end with no sessionKey', () => {
+      const result = api._fireHook('agent_end', {}, {});
+      expect(result).toBeUndefined();
     });
   });
 

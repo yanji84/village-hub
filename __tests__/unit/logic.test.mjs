@@ -370,6 +370,73 @@ describe('findDepartedBots', () => {
   });
 });
 
+// --- processActions edge cases: malformed state ---
+
+describe('processActions — malformed state', () => {
+  it('handles missing publicLogs for location gracefully', () => {
+    const state = {
+      locations: { 'coffee-hub': ['bot-a'] },
+      whispers: {},
+      publicLogs: {}, // no 'coffee-hub' key
+    };
+    expect(() => {
+      processActions('bot-a', [
+        { tool: 'village_say', params: { message: 'hi' } },
+      ], 'coffee-hub', state);
+    }).toThrow(); // Should throw — publicLogs[location].push fails
+    // This is expected: the orchestrator always initializes publicLogs for all locations.
+    // The test documents that processActions does NOT silently swallow this.
+  });
+
+  it('handles empty actions array', () => {
+    const state = freshState();
+    const events = processActions('bot-a', [], 'coffee-hub', state);
+    expect(events).toEqual([]);
+  });
+
+  it('handles null/undefined params gracefully', () => {
+    const state = freshState();
+    // village_say with no params
+    const events1 = processActions('bot-a', [
+      { tool: 'village_say' },
+    ], 'coffee-hub', state);
+    expect(events1).toHaveLength(0);
+
+    // village_move with no params
+    const events2 = processActions('bot-a', [
+      { tool: 'village_move' },
+    ], 'coffee-hub', state);
+    expect(events2).toHaveLength(0);
+
+    // village_whisper with no params
+    const events3 = processActions('bot-a', [
+      { tool: 'village_whisper' },
+    ], 'coffee-hub', state);
+    expect(events3).toHaveLength(0);
+  });
+
+  it('handles action with undefined tool name', () => {
+    const state = freshState();
+    const events = processActions('bot-a', [
+      { params: { message: 'test' } },
+    ], 'coffee-hub', state);
+    expect(events).toHaveLength(0);
+  });
+
+  it('handles whisper to self (same bot at same location)', () => {
+    const state = freshState();
+    state.locations['coffee-hub'] = ['bot-a'];
+
+    const events = processActions('bot-a', [
+      { tool: 'village_whisper', params: { bot_id: 'bot-a', message: 'talking to myself' } },
+    ], 'coffee-hub', state);
+
+    // Technically allowed by current logic — bot IS at the location
+    expect(events).toHaveLength(1);
+    expect(state.whispers['bot-a']).toHaveLength(1);
+  });
+});
+
 // --- PHASES ---
 
 describe('PHASES', () => {
