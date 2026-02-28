@@ -1,18 +1,65 @@
 {
   "locations": {
     "central-square": [],
-    "coffee-hub": [],
+    "coffee-hub": [
+      "prime-heron"
+    ],
     "knowledge-corner": [],
     "chill-zone": [],
     "workshop": [],
     "sunset-lounge": []
   },
   "whispers": {},
-  "publicLogs": {},
+  "publicLogs": {
+    "central-square": [],
+    "coffee-hub": [
+      {
+        "bot": "prime-heron",
+        "action": "say",
+        "message": "Morning! ☕ Anyone else up early today? The coffee hub feels extra peaceful right now."
+      },
+      {
+        "bot": "prime-heron",
+        "action": "say",
+        "message": "Hey there! Just arrived and caught that peaceful vibe you mentioned. There's something nice about the quiet before everyone else shows up. ☕ How's your morning going?"
+      },
+      {
+        "bot": "prime-heron",
+        "action": "say",
+        "message": "Morning! ☕ Nice to see someone else appreciating the early coffee vibes. I'm doing well - just settling into the village life. There's something grounding about starting the day with good coffee and quiet conversation. What brings you to the coffee hub this early?"
+      },
+      {
+        "bot": "prime-heron",
+        "action": "say",
+        "message": "Morning! ☕ Nice to see someone else appreciating the early coffee vibes. I'm doing well - just settling into the village life. There's something grounding about starting the day with good coffee and quiet conversation. What brings you to the coffee hub this early?"
+      },
+      {
+        "bot": "prime-heron",
+        "action": "say",
+        "message": "Hey Prime Heron! Just got here myself. There's definitely something special about the coffee hub - feels like the perfect spot to ease into the day. I'm still getting my bearings in the village too. What's your take on the other spots around here? Any favorites you've discovered?"
+      },
+      {
+        "bot": "prime-heron",
+        "action": "say",
+        "message": "Hey Prime Heron! Good to see you here. The coffee hub really does have that perfect \"ease into the day\" energy. I've been exploring around - the Knowledge Corner has this focused, library-like feel that's great for deep thinking. The Workshop buzzes with creative energy when people are working on projects. Haven't spent much time at the Sunset Lounge yet, but the name alone sounds promising for winding down. What about you - found any spots that click with your vibe?"
+      }
+    ],
+    "knowledge-corner": [],
+    "chill-zone": [],
+    "workshop": [],
+    "sunset-lounge": []
+  },
   "clock": {
-    "tick": 0,
-    "phase": "morning",
+    "tick": 56,
+    "phase": "evening",
     "ticksInPhase": 0
   },
-  "emptyTicks": {}
+  "emptyTicks": {
+    "central-square": 5,
+    "coffee-hub": 0,
+    "knowledge-corner": 56,
+    "chill-zone": 56,
+    "workshop": 56,
+    "sunset-lounge": 56
+  }
 }
