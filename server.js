@@ -92,6 +92,7 @@ async function loadState() {
       emptyTicks: loaded.emptyTicks || {},
       relationships: loaded.relationships || {},
       emotions: loaded.emotions || {},
+      villageCosts: loaded.villageCosts || {},
     };
     for (const loc of ALL_LOCATIONS) {
       if (!state.locations[loc]) state.locations[loc] = [];
@@ -148,6 +149,16 @@ async function saveState() {
 
 function readBotDailyCost(botName) {
   return readBotDailyCostImpl(botName, USAGE_FILE, readFile);
+}
+
+function accumulateResponseCost(botName, response) {
+  if (!response?.usage) return;
+  const cost = response.usage.cost?.total
+    || response.usage.cost
+    || 0;
+  if (typeof cost === 'number' && cost > 0) {
+    state.villageCosts[botName] = (state.villageCosts[botName] || 0) + cost;
+  }
 }
 
 // --- Auth helper for /api/join and /api/leave ---
@@ -415,6 +426,11 @@ async function tick() {
         return { botName, response, loc };
       })
     );
+
+    // Accumulate village-specific costs from response usage data
+    for (const { botName, response } of allResults) {
+      accumulateResponseCost(botName, response);
+    }
 
     // Process all responses after everyone has responded
     for (const { botName, response, loc } of allResults) {
