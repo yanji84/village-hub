@@ -47,6 +47,7 @@ import {
   tickSurvival,
   handleDeath,
 } from './survival-logic.js';
+import { runFastTick } from './autopilot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -77,6 +78,7 @@ const EMPTY_CLEAR_TICKS = 3;
 
 const isGridGame = gameConfig.isGridGame;
 const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || (isGridGame ? '60000' : '120000'), 10);
+const FAST_TICK_MS = gameConfig.raw.autopilot?.fastTickMs || 2000;
 const STATE_FILE = join(__dirname, `state-${VILLAGE_GAME}.json`);
 const MEMORY_FILENAME = isGridGame ? 'survival.md' : 'village.md';
 const USAGE_FILE = join(paths.PROJECT_DIR, 'api-router', 'usage.json');
@@ -489,6 +491,34 @@ function advanceClock() {
   }
 }
 
+// --- Fast tick (autopilot, grid game only) ---
+
+function fastTick() {
+  if (!isGridGame || paused || !state.terrain) return;
+  if (tickInProgress) return; // skip if slow tick is running
+
+  const displayNames = {};
+  for (const [name, info] of participants) {
+    displayNames[name] = info.displayName;
+  }
+
+  const { events, positionUpdates } = runFastTick(state, gameConfig);
+
+  for (const ev of events) {
+    broadcastEvent({
+      type: 'survival_event',
+      tick: state.clock.tick,
+      bot: ev.bot,
+      displayName: displayNames[ev.bot] || ev.bot,
+      ...ev,
+    });
+  }
+
+  if (Object.keys(positionUpdates).length > 0) {
+    broadcastEvent({ type: 'fast_tick', positions: positionUpdates });
+  }
+}
+
 // --- Survival tick (grid game) ---
 
 async function survivalTick(tickStart) {
@@ -593,10 +623,16 @@ async function survivalTick(tickStart) {
       recentEvents: [...(state.recentEvents || []).slice(-10), ...visibleEvents],
       villageSummary: villageSummaries.get(botName) || '',
       isScout: false,
+      fastTickStats: botState.fastTickStats || null,
     });
 
     const conversationId = `survival:${botName}`;
     allSceneRequests.push({ botName, port, conversationId, scene });
+  }
+
+  // Broadcast thinking state for all bots being sent scenes
+  for (const { botName } of allSceneRequests) {
+    broadcastEvent({ type: 'thinking', bot: botName, thinking: true });
   }
 
   // Send scenes in parallel
@@ -610,6 +646,11 @@ async function survivalTick(tickStart) {
       return { botName, response };
     })
   );
+
+  // Clear thinking state
+  for (const { botName } of allSceneRequests) {
+    broadcastEvent({ type: 'thinking', bot: botName, thinking: false });
+  }
 
   // Accumulate costs
   for (const { botName, response } of allResults) {
@@ -630,11 +671,22 @@ async function survivalTick(tickStart) {
     const botState = state.bots[botName];
     if (!botState) continue;
 
+    // Set current tick for directive timestamping
+    botState._currentTick = tickNum;
+
     const { events: evts, pendingAttacks: atks } = processSurvivalActions(
       botName, response.actions, botState, state, gameConfig
     );
     actionEvents.push(...evts);
     pendingAttacks.push(...atks);
+
+    // Reset fast-tick stats after slow tick processes
+    botState.fastTickStats = {
+      tilesMoved: 0,
+      itemsGathered: [],
+      damageDealt: 0,
+      damageTaken: 0,
+    };
   }
 
   // Simultaneous combat resolution
@@ -746,6 +798,7 @@ async function survivalTick(tickStart) {
         x: bs.x, y: bs.y, health: bs.health, hunger: bs.hunger, alive: bs.alive,
         equipment: bs.equipment, inventory: bs.inventory,
         displayName: displayNames[name] || name,
+        directive: bs.directive || null,
       }])
     ),
     resourceChanges: (depletedTiles.length > 0 || respawnedCoords.length > 0)
@@ -1164,6 +1217,10 @@ const server = createServer(async (req, res) => {
           inventory: {},
           equipment: { weapon: null, armor: null, tool: null },
           alive: true,
+          directive: { intent: 'idle', target: null, fallback: null, x: null, y: null, setAt: 0 },
+          path: null,
+          pathIdx: 0,
+          fastTickStats: { tilesMoved: 0, itemsGathered: [], damageDealt: 0, damageTaken: 0 },
         };
         broadcastEvent({
           type: 'survival_event', bot: botName, displayName: name,
@@ -1423,12 +1480,19 @@ const server = createServer(async (req, res) => {
 
 // --- Game loop ---
 let tickTimer = null;
+let fastTickTimer = null;
 
 function startGameLoop() {
   // Run first tick after a short delay
   nextTickAt = Date.now() + 5000;
   setTimeout(() => tick(), 5000);
   tickTimer = setInterval(() => tick(), TICK_INTERVAL_MS);
+
+  // Start fast tick for grid games (autopilot)
+  if (isGridGame) {
+    fastTickTimer = setInterval(() => fastTick(), FAST_TICK_MS);
+    console.log(`[village] Fast tick started: ${FAST_TICK_MS}ms interval`);
+  }
 }
 
 // --- Graceful shutdown ---
@@ -1437,6 +1501,7 @@ function shutdown(signal) {
   console.log(`[village] ${signal} received — shutting down`);
 
   if (tickTimer) clearInterval(tickTimer);
+  if (fastTickTimer) clearInterval(fastTickTimer);
 
   // Wait for current tick to finish
   const waitForTick = () => {

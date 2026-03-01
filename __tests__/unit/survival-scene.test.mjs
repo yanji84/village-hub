@@ -150,14 +150,14 @@ describe('buildSurvivalScene', () => {
     expect(scene).toContain('HP:80');
   });
 
-  it('shows attack action only when nearby bots exist', () => {
+  it('shows hunt suggestion only when nearby bots exist', () => {
     const sceneAlone = buildSurvivalScene(makeOpts());
-    expect(sceneAlone).not.toContain('survival_attack');
+    expect(sceneAlone).not.toContain('Nearby bots detected');
 
     const opts = makeOpts();
     opts.worldState.bots.bob = { x: 6, y: 5, alive: true, health: 80, equipment: { weapon: null, armor: null, tool: null } };
     const sceneWithBot = buildSurvivalScene(opts);
-    expect(sceneWithBot).toContain('survival_attack');
+    expect(sceneWithBot).toContain('Nearby bots detected');
   });
 
   it('shows craftable recipes when materials available', () => {

@@ -77,17 +77,18 @@ export function formatStats(botState, dayPhase, tick) {
  *
  * @param {object} opts
  * @param {string} opts.botName
- * @param {object} opts.botState - { x, y, health, hunger, inventory, equipment, alive }
+ * @param {object} opts.botState - { x, y, health, hunger, inventory, equipment, alive, directive, fastTickStats }
  * @param {object} opts.worldState - { terrain, tileData, bots, clock }
  * @param {object} opts.gameConfig
  * @param {number} opts.currentTick
  * @param {Array} opts.recentEvents - Events this bot witnessed
  * @param {string} opts.villageSummary - Memory summary
  * @param {boolean} opts.isScout - Whether bot scouted this tick
+ * @param {object} [opts.fastTickStats] - { tilesMoved, itemsGathered, damageDealt, damageTaken }
  * @returns {string} Scene prompt
  */
 export function buildSurvivalScene({ botName, botState, worldState, gameConfig, currentTick,
-                                      recentEvents, villageSummary, isScout }) {
+                                      recentEvents, villageSummary, isScout, fastTickStats }) {
   const labels = gameConfig.raw.sceneLabels;
   const dayNight = gameConfig.raw.dayNight;
   const dayPhase = getDayPhase(currentTick, dayNight);
@@ -136,11 +137,47 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
       const label = gameConfig.raw.items[r.item]?.label || r.item;
       return `${label} x${r.qty}`;
     }).join(', ');
-    lines.push(`Terrain: ${terrainType} | Resources here: ${resList} ← use survival_gather to collect!`);
+    lines.push(`Terrain: ${terrainType} | Resources here: ${resList} (autopilot will auto-gather)`);
   } else {
     lines.push(`Terrain: ${terrainType} | No resources on this tile.`);
   }
   lines.push('');
+
+  // == CURRENT DIRECTIVE ==
+  const directive = botState.directive;
+  lines.push('== CURRENT DIRECTIVE ==');
+  if (directive && directive.intent !== 'idle') {
+    let directiveStr = `Intent: ${directive.intent}`;
+    if (directive.target) directiveStr += ` | Target: ${directive.target}`;
+    if (directive.fallback) directiveStr += ` | Fallback: ${directive.fallback}`;
+    if (directive.x != null && directive.y != null) directiveStr += ` | Goto: (${directive.x},${directive.y})`;
+    directiveStr += ` | Set at tick ${directive.setAt || '?'}`;
+    lines.push(directiveStr);
+  } else {
+    lines.push('No active directive. Your soldier is idle. Set a directive!');
+  }
+  lines.push('');
+
+  // == AUTOPILOT REPORT ==
+  const stats = fastTickStats || botState.fastTickStats;
+  if (stats && (stats.tilesMoved > 0 || stats.itemsGathered.length > 0 || stats.damageDealt > 0 || stats.damageTaken > 0)) {
+    lines.push('== AUTOPILOT REPORT (since last tick) ==');
+    const parts = [];
+    if (stats.tilesMoved > 0) parts.push(`Moved ${stats.tilesMoved} tiles`);
+    if (stats.itemsGathered.length > 0) {
+      const counts = {};
+      for (const item of stats.itemsGathered) counts[item] = (counts[item] || 0) + 1;
+      const gathered = Object.entries(counts).map(([item, qty]) => {
+        const label = gameConfig.raw.items[item]?.label || item;
+        return `${label} x${qty}`;
+      }).join(', ');
+      parts.push(`Gathered ${gathered}`);
+    }
+    if (stats.damageDealt > 0) parts.push(`Dealt ${stats.damageDealt} damage`);
+    if (stats.damageTaken > 0) parts.push(`Took ${stats.damageTaken} damage`);
+    lines.push(parts.join(' | '));
+    lines.push('');
+  }
 
   // == INVENTORY ==
   lines.push(labels.inventoryHeader);
@@ -188,34 +225,41 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
 
   // == ACTIONS ==
   lines.push(labels.actionsHeader);
-  lines.push('You get up to 3 actions per turn. Call each tool once to act.');
-  lines.push('EXCLUSIVE actions (move/attack/scout) take your whole turn — no other actions allowed.');
-  lines.push('NON-EXCLUSIVE actions (gather/eat/craft/say) can be combined freely.');
+  lines.push('Set a strategic directive. Your autopilot soldier will execute it automatically.');
+  lines.push('You can also craft/eat/say directly as immediate actions.');
   lines.push('');
 
   // Contextual suggestions
   const suggestions = [];
-  if (currentTile?.resources?.length > 0) {
-    suggestions.push('→ You are on a resource tile! Call survival_gather to collect.');
-  }
   const foodItems = Object.entries(botState.inventory).filter(([item]) => gameConfig.raw.items[item]?.type === 'food');
   if (botState.hunger >= 30 && foodItems.length > 0) {
-    suggestions.push(`→ Hunger is ${botState.hunger}/100. Call survival_eat to eat: ${foodItems.map(([item]) => item).join(', ')}`);
+    suggestions.push(`→ Hunger is ${botState.hunger}/100. Call survival_eat or set directive to "eat".`);
   } else if (botState.hunger >= 30 && foodItems.length === 0) {
-    suggestions.push(`→ Hunger is ${botState.hunger}/100 and you have no food! Find resource tiles (@) to gather berries.`);
+    suggestions.push(`→ Hunger is ${botState.hunger}/100 and you have no food! Set directive: gather berry.`);
   }
   const craftable = getCraftableRecipes(botState.inventory, gameConfig);
   if (craftable.length > 0) {
     suggestions.push(`→ You can craft: ${craftable.map(r => r.output).join(', ')}`);
+  }
+  if (nearbyBots.length > 0) {
+    suggestions.push(`→ Nearby bots detected. Set "hunt <name>" to attack or "defend" to hold position.`);
   }
   if (suggestions.length > 0) {
     lines.push(...suggestions);
     lines.push('');
   }
 
-  lines.push('  survival_move { direction: "N|S|E|W|NE|NW|SE|SW" } — Move one tile [EXCLUSIVE]');
-  lines.push('  survival_gather {} — Gather resources from current tile');
-  lines.push('  survival_eat { item: "berry" } — Eat food to reduce hunger');
+  lines.push('  survival_set_directive { intent, target, fallback, x, y, message }');
+  lines.push('    Intents: gather, hunt, flee, craft, eat, explore, defend, goto, idle');
+  lines.push('    Examples:');
+  lines.push('      { intent: "gather", target: "iron_ore", fallback: "stone" }');
+  lines.push('      { intent: "hunt", target: "bot-name" }');
+  lines.push('      { intent: "goto", x: 15, y: 20 }');
+  lines.push('      { intent: "explore" }');
+  lines.push('      { intent: "defend" }');
+  lines.push('');
+
+  lines.push('  survival_eat { item: "berry" } — Eat food immediately');
 
   if (craftable.length > 0) {
     lines.push('  survival_craft { item: "<output>" } — Craft an item:');
@@ -225,17 +269,16 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
     }
   }
 
-  if (nearbyBots.length > 0) {
-    lines.push('  survival_attack { target: "<bot_name>" } — Attack adjacent bot [EXCLUSIVE]');
-  }
-
   lines.push('  survival_say { message: "..." } — Say something to nearby survivors');
-  lines.push('  survival_scout {} — Scout area for extended visibility [EXCLUSIVE]');
   lines.push('');
 
   // == GUIDANCE ==
   lines.push(labels.guidanceHeader);
-  lines.push(labels.behaviorGuidance);
+  lines.push('You are the General. Set strategic directives — your autopilot soldier executes them automatically.');
+  lines.push('The soldier handles movement, pathfinding, gathering, eating, and combat between your turns.');
+  lines.push('Focus on WHAT to do, not HOW. Change directive when your situation changes.');
+  lines.push('Auto-survival: soldier auto-eats at high hunger, auto-flees at low HP.');
+  lines.push('ALWAYS call at least one tool — survival_set_directive, survival_craft, survival_eat, or survival_say.');
 
   if (villageSummary) {
     lines.push('');
@@ -302,6 +345,10 @@ function formatEvent(ev, gameConfig) {
       return `${ev.bot} says: "${ev.message}"`;
     case 'scout':
       return `${ev.bot} scouted the area`;
+    case 'directive':
+      return `${ev.bot} set directive: ${ev.intent}${ev.target ? ' → ' + ev.target : ''}`;
+    case 'directive_fail':
+      return `${ev.bot}: ${ev.reason}`;
     case 'gather_fail':
     case 'move_fail':
     case 'craft_fail':

@@ -354,6 +354,28 @@ function drawBot(bot, bx, by) {
   cx.fillRect(px - tw / 2 - 1, py + 5*s, tw + 2, fontSize + 2);
   cx.fillStyle = isSelected ? '#fff' : '#ccc';
   cx.fillText(name, px, py + 5*s + fontSize);
+
+  // Directive label (small text above HP bar)
+  if (bot.directive && bot.directive.intent && bot.directive.intent !== 'idle') {
+    const dirText = bot.directive.intent;
+    const dirFont = Math.max(4, Math.round(4*s));
+    cx.font = dirFont + 'px Courier New';
+    const dtw = cx.measureText(dirText).width;
+    cx.fillStyle = 'rgba(0,0,0,0.5)';
+    cx.fillRect(px - dtw / 2 - 1, py - 9*s, dtw + 2, dirFont + 1);
+    cx.fillStyle = '#fdd835';
+    cx.fillText(dirText, px, py - 9*s + dirFont);
+  }
+
+  // Thinking indicator (pulsing dot)
+  if (bot.thinking) {
+    const pulse = Math.sin(frame * 0.15) * 0.4 + 0.6;
+    cx.fillStyle = `rgba(100,200,255,${pulse})`;
+    cx.beginPath();
+    cx.arc(px + 5*s, py - 5*s, 2*s, 0, Math.PI * 2);
+    cx.fill();
+  }
+
   cx.textAlign = 'left';
 }
 
@@ -372,13 +394,32 @@ function applyDayNightTint() {
   cx.fillRect(0, 0, CW, CH);
 }
 
+// ========== POSITION INTERPOLATION ==========
+function lerpBots() {
+  const speed = 0.15; // lerp factor per frame (~60fps → smooth 200ms transition)
+  for (const bot of Object.values(bots)) {
+    if (bot.renderX === undefined) { bot.renderX = bot.x; bot.renderY = bot.y; }
+    const dx = bot.x - bot.renderX;
+    const dy = bot.y - bot.renderY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      // Teleport if too far (respawn, etc.)
+      bot.renderX = bot.x;
+      bot.renderY = bot.y;
+    } else {
+      bot.renderX += dx * speed;
+      bot.renderY += dy * speed;
+    }
+  }
+}
+
 // ========== CAMERA ==========
 function updateCamera() {
   if (!autoFollow || !selectedBot || !bots[selectedBot]) return;
   const bot = bots[selectedBot];
-  // Camera target: center on bot
-  cameraX = bot.x * TILE + TILE / 2 - CW / 2;
-  cameraY = bot.y * TILE + TILE / 2 - CH / 2;
+  const rx = bot.renderX !== undefined ? bot.renderX : bot.x;
+  const ry = bot.renderY !== undefined ? bot.renderY : bot.y;
+  cameraX = rx * TILE + TILE / 2 - CW / 2;
+  cameraY = ry * TILE + TILE / 2 - CH / 2;
   clampCamera();
 }
 
@@ -394,6 +435,9 @@ function render() {
   frame++;
   cx.imageSmoothingEnabled = false;
 
+  // Interpolate positions
+  lerpBots();
+
   // Clear
   cx.fillStyle = '#111';
   cx.fillRect(0, 0, CW, CH);
@@ -403,14 +447,16 @@ function render() {
     cx.drawImage(terrainCanvas, -cameraX, -cameraY);
   }
 
-  // Draw bots sorted by y for z-order
-  const sortedBots = Object.values(bots).sort((a, b) => a.y - b.y);
+  // Draw bots sorted by renderY for z-order
+  const sortedBots = Object.values(bots).sort((a, b) => (a.renderY || a.y) - (b.renderY || b.y));
   for (const bot of sortedBots) {
-    const sx = bot.x * TILE - cameraX;
-    const sy = bot.y * TILE - cameraY;
+    const rx = bot.renderX !== undefined ? bot.renderX : bot.x;
+    const ry = bot.renderY !== undefined ? bot.renderY : bot.y;
+    const sx = rx * TILE - cameraX;
+    const sy = ry * TILE - cameraY;
     // Only draw if on screen
     if (sx > -TILE * 2 && sx < CW + TILE && sy > -TILE * 2 && sy < CH + TILE) {
-      drawBot(bot, bot.x - cameraX / TILE, bot.y - cameraY / TILE);
+      drawBot(bot, rx - cameraX / TILE, ry - cameraY / TILE);
     }
   }
 
@@ -476,6 +522,18 @@ function renderBotInfo() {
 
   if (bot.inventory && bot.inventory.length) {
     html += `<div class="stat"><span class="label">Items:</span> <span class="val">${esc(bot.inventory.join(', '))}</span></div>`;
+  }
+
+  // Directive display
+  if (bot.directive && bot.directive.intent) {
+    let dirStr = bot.directive.intent;
+    if (bot.directive.target) dirStr += ' → ' + bot.directive.target;
+    html += `<div class="stat"><span class="label">Directive:</span> <span class="val act">${esc(dirStr)}</span></div>`;
+  }
+
+  // Thinking indicator
+  if (bot.thinking) {
+    html += `<div class="stat"><span class="val" style="color:#64b5f6">Thinking...</span></div>`;
   }
 
   el.innerHTML = html;
@@ -573,6 +631,8 @@ function formatSurvivalEvent(d) {
       return `${ts} ${bn} <span class="heal">healed for ${d.amount || '?'} HP</span>`;
     case 'explore':
       return `${ts} ${bn} <span class="act">explored</span> the area`;
+    case 'directive':
+      return `${ts} ${bn} <span class="act">set directive:</span> <span class="item">${esc(d.intent || '?')}${d.target ? ' → ' + esc(d.target) : ''}</span>`;
     case 'interact':
       return `${ts} ${bn} <span class="act">interacted with</span> <span class="item">${esc(d.target || '???')}</span>`;
     case 'say':
@@ -901,6 +961,7 @@ function processTick(d) {
           if (bs.equipment) bots[id].equipment = bs.equipment;
           if (bs.inventory) bots[id].inventory = bs.inventory;
           if (bs.displayName) bots[id].displayName = bs.displayName;
+          if (bs.directive) bots[id].directive = bs.directive;
         } else {
           bots[id] = {
             _id: id,
@@ -913,6 +974,7 @@ function processTick(d) {
             displayName: bs.displayName || id,
             equipment: bs.equipment || {},
             inventory: bs.inventory || [],
+            directive: bs.directive || null,
           };
         }
       }
@@ -928,6 +990,7 @@ function processTick(d) {
           if (bs.equipment) bots[id].equipment = bs.equipment;
           if (bs.inventory) bots[id].inventory = bs.inventory;
           if (bs.displayName) bots[id].displayName = bs.displayName;
+          if (bs.directive) bots[id].directive = bs.directive;
         } else {
           bots[id] = {
             _id: id,
@@ -940,6 +1003,7 @@ function processTick(d) {
             displayName: bs.displayName || id,
             equipment: bs.equipment || {},
             inventory: bs.inventory || [],
+            directive: bs.directive || null,
           };
         }
       }
@@ -984,6 +1048,25 @@ function processTick(d) {
   updateBar();
 }
 
+// ========== PROCESS FAST TICK (autopilot position updates) ==========
+function processFastTick(d) {
+  if (!d.positions) return;
+  for (const [id, pos] of Object.entries(d.positions)) {
+    if (bots[id]) {
+      bots[id].x = pos.x;
+      bots[id].y = pos.y;
+    }
+  }
+}
+
+// ========== PROCESS THINKING STATE ==========
+function processThinking(d) {
+  const botId = d.bot;
+  if (botId && bots[botId]) {
+    bots[botId].thinking = !!d.thinking;
+  }
+}
+
 // ========== SSE CONNECTION ==========
 function connect() {
   const basePath = location.pathname.replace(/\/survival\.html$/, '').replace(/\/+$/, '');
@@ -1006,6 +1089,10 @@ function connect() {
         processSurvivalEvent(d);
       } else if (type === 'tick') {
         processTick(d);
+      } else if (type === 'fast_tick') {
+        processFastTick(d);
+      } else if (type === 'thinking') {
+        processThinking(d);
       }
     } catch (err) {
       // Ignore parse errors
@@ -1029,6 +1116,18 @@ function connect() {
   es.addEventListener('tick', (e) => {
     try {
       processTick(JSON.parse(e.data));
+    } catch {}
+  });
+
+  es.addEventListener('fast_tick', (e) => {
+    try {
+      processFastTick(JSON.parse(e.data));
+    } catch {}
+  });
+
+  es.addEventListener('thinking', (e) => {
+    try {
+      processThinking(JSON.parse(e.data));
     } catch {}
   });
 

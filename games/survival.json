@@ -77,14 +77,23 @@
     { "inputs": ["iron_ore", "iron_ore", "iron_ore", "scrap_metal"], "output": "iron_armor" }
   ],
 
+  "autopilot": {
+    "fastTickMs": 2000,
+    "autoEatThreshold": 70,
+    "autoFleeThreshold": 20,
+    "autoGatherOnMove": true,
+    "maxPathLength": 50
+  },
+
   "actions": {
-    "move":    { "exclusive": true },
-    "gather":  { "exclusive": false },
-    "craft":   { "exclusive": false },
-    "eat":     { "exclusive": false },
-    "attack":  { "exclusive": true },
-    "say":     { "exclusive": false },
-    "scout":   { "exclusive": true }
+    "move":          { "exclusive": true },
+    "gather":        { "exclusive": false },
+    "craft":         { "exclusive": false },
+    "eat":           { "exclusive": false },
+    "attack":        { "exclusive": true },
+    "say":           { "exclusive": false },
+    "scout":         { "exclusive": true },
+    "set_directive": { "exclusive": false }
   },
 
   "sceneLabels": {
@@ -99,6 +108,6 @@
     "noRecent": "Nothing notable happened recently.",
     "emptyInventory": "Your inventory is empty.",
     "mapLegend": "Legend: * = you, B = other bot, @ = resource, . = plains, T = forest, ^ = mountain, ~ = water, O = cave, # = ruins, (space) = fog",
-    "behaviorGuidance": "ALWAYS call at least one tool each turn — never just output text without a tool call. If you're on a resource tile (@), call survival_gather. If you have food and hunger > 30, call survival_eat. If you can craft, call survival_craft. Otherwise, call survival_move toward the nearest @ tile. You can combine non-exclusive tools (gather+eat+craft) in one turn. Explore, gather, survive."
+    "behaviorGuidance": "ALWAYS call at least one tool each turn — never just output text without a tool call. Set a directive with survival_set_directive to command your autopilot soldier. Use survival_craft to craft items, survival_eat to eat food. Your soldier auto-gathers, auto-moves, and auto-fights based on your directive. Think strategically."
   }
 }

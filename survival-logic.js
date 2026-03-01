@@ -145,6 +145,11 @@ export function processActions(botName, actions, botState, worldState, gameConfi
         events.push(...result);
         break;
       }
+      case 'set_directive': {
+        const result = applyDirective(botName, botState, params);
+        events.push(...result);
+        break;
+      }
     }
   }
 
@@ -160,8 +165,65 @@ function toolToActionType(tool) {
     survival_attack: 'attack',
     survival_say: 'say',
     survival_scout: 'scout',
+    survival_set_directive: 'set_directive',
   };
   return map[tool] || null;
+}
+
+// --- Directive ---
+
+const VALID_INTENTS = new Set([
+  'gather', 'hunt', 'flee', 'craft', 'eat', 'explore', 'defend', 'goto', 'idle',
+]);
+
+/**
+ * Validate and store a directive on the bot state.
+ *
+ * @param {string} botName
+ * @param {object} botState - Mutable
+ * @param {object} params - { intent, target, fallback, x, y, message }
+ * @returns {Array} events
+ */
+export function applyDirective(botName, botState, params) {
+  const intent = params.intent || 'idle';
+  if (!VALID_INTENTS.has(intent)) {
+    return [{ action: 'directive_fail', bot: botName, reason: `Unknown intent: ${intent}` }];
+  }
+
+  botState.directive = {
+    intent,
+    target: params.target || null,
+    fallback: params.fallback || null,
+    x: params.x != null ? params.x : null,
+    y: params.y != null ? params.y : null,
+    setAt: botState._currentTick || 0,
+  };
+
+  // Reset pathfinding when directive changes
+  botState.path = null;
+  botState.pathIdx = 0;
+
+  const events = [{
+    action: 'directive',
+    bot: botName,
+    intent,
+    target: params.target || null,
+    x: botState.x,
+    y: botState.y,
+  }];
+
+  // Handle optional speech
+  if (params.message) {
+    events.push({
+      action: 'say',
+      bot: botName,
+      message: (params.message || '').slice(0, 500),
+      x: botState.x,
+      y: botState.y,
+    });
+  }
+
+  return events;
 }
 
 // --- Move ---
