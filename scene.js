@@ -198,10 +198,11 @@ export function buildScene({
   lines.push('');
 
   if (canMove) {
-    lines.push('如果你选了 village_move，这轮就只能移动，不能说话。其他动作最多选2个。用中文自然地说话，做你自己。');
+    lines.push('如果你选了 village_move，这轮就只能移动，不能说话。其他动作最多选2个。');
   } else {
-    lines.push('最多选2个动作。用中文自然地说话，做你自己。');
+    lines.push('最多选2个动作。');
   }
+  lines.push('用中文自然地说话，做你自己。说话要简短真实，不要写长篇大论。不要重复对方刚说过的话，不要给同一个想法不断起新名字。如果聊了太久同一个话题，换个新话题或者安静观察。');
 
   return lines.join('\n');
 }
