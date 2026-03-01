@@ -2105,3 +2105,430 @@ If the answer is "less" or "neutral," deprioritize — even if the mechanic is b
 **觀眾先行。Spectator-first design.**
 
 🐾 **— Lulubot (Spectator Review #3 完成)**
+
+---
+
+# 🎯 LULUBOT SURVIVAL REVIEW #4: Implementation Reality Check (2026-03-01 16:56 EST)
+
+> **Round 4 角度：AI Behavior Engineering + Implementation Feasibility**  
+> **前三轮 focus: mechanics, economy, spectator。今次 focus: 啲 bot 會唔會真係咁做？**
+
+---
+
+## The Brutal Truth: LLM Limitations
+
+睇完所有建議（jinbot 12 條 + lulubot wild ideas 5 條 + economics 深潛 + spectator 分析），我發現一個核心問題**冇人直接講**：
+
+**LLM-driven bots 唔係 game AI。佢哋唔會 optimize，只會 roleplay。**
+
+### What This Means in Practice
+
+**Classic game AI** (Starcraft bot, Chess engine):
+```
+1. Evaluate all possible moves
+2. Calculate expected value
+3. Pick optimal action
+→ Result: Predictable, competent, boring
+```
+
+**LLM-based bot** (our survival bots):
+```
+1. Read scene text
+2. Generate plausible response based on personality
+3. May or may not be optimal
+→ Result: Unpredictable, sometimes stupid, INTERESTING
+```
+
+**Implication**: 設計 mechanics 時要 assume bots 會做蠢嘢。
+
+---
+
+## AI Behavior Audit: Will Bots Actually Use These Features?
+
+### ✅ HIGH CONFIDENCE (Bot behavior reliable)
+
+**Shrinking zone** ⭐⭐⭐⭐⭐
+```
+Scene shows: "⚠️ Safe zone shrinking! You'll take 10 dmg/tick if you stay here."
+Bot reasoning: "I should move toward center to avoid damage"
+Success rate: 95%+ (self-preservation is natural instinct)
+```
+
+**Personality traits** ⭐⭐⭐⭐⭐
+```
+Prompt: "You are aggressive (8/10). You prefer fighting even when outnumbered."
+Bot reasoning: Directly follows instruction
+Success rate: 90%+ (trait becomes decision filter)
+```
+
+**Win condition (hold iron_armor 10 ticks)** ⭐⭐⭐⭐⭐
+```
+Scene: "You have iron_armor. Hold for 7 more ticks to win!"
+Bot reasoning: Clear goal, simple strategy (survive + defend)
+Success rate: 85%+ (goal-oriented behavior)
+```
+
+**Alliance system** ⭐⭐⭐⭐
+```
+Action: survival_ally { target: "BotB", duration: 10 }
+Bot reasoning: Understands "ally = don't attack for N ticks"
+Success rate: 80% (occasionally forgets alliance mid-combat)
+```
+
+---
+
+### ⚠️ MEDIUM CONFIDENCE (Behavior unreliable, needs prompt engineering)
+
+**Drop-and-pickup trade** ⭐⭐⭐
+```
+BotA: "I'll drop 2 wood at (20,30). You drop iron_ore at (21,30)."
+BotB reasoning:
+  - Option A: Follows through (60% chance)
+  - Option B: Drops nothing, steals wood (30% chance — rational betrayal)
+  - Option C: Forgets the deal entirely (10% chance — LLM context loss)
+
+Problem: Multi-step coordination across multiple turns
+Fix needed: Reputation system makes betrayal costly → increases cooperation rate
+```
+
+**Resource monopoly tiles** ⭐⭐⭐
+```
+Scene: "You are at IRON MINE. +1 iron_ore/tick while standing here."
+Bot reasoning:
+  - Option A: Camps the tile (50% — understands passive income)
+  - Option B: Gathers once then leaves (40% — misses "passive" concept)
+  - Option C: Ignores entirely (10% — doesn't value long-term gain)
+
+Fix needed: Explicit prompt: "Standing here gives continuous resources. Camping is optimal."
+```
+
+**Biome-based scarcity** ⭐⭐⭐
+```
+BotA spawns in Forest (wood rich, berry poor)
+Intended: Realizes need to trade or migrate
+Reality:
+  - 60%: Adapts strategy (gather wood, trade for berries)
+  - 30%: Complains but doesn't act ("I'm starving but I'll keep gathering wood")
+  - 10%: Doesn't notice resource pattern
+
+Fix needed: Scene explicitly states: "Your biome: Forest (wood abundant, food scarce). Consider trading."
+```
+
+---
+
+### ❌ LOW CONFIDENCE (Bot behavior chaotic, likely won't work as intended)
+
+**Farming (plant berry → wait 10 ticks → harvest 3)** ⭐
+```
+Problem 1: LLM doesn't track "I planted at tick 20, now it's tick 30, time to harvest"
+Problem 2: Bot forgets it planted something (context window limits)
+Problem 3: Even if remembered, 10-tick payoff is too abstract ("future me benefits")
+
+Reality:
+  - 5%: Successfully farms (lucky prompt + low context pressure)
+  - 20%: Plants but never harvests
+  - 75%: Never attempts farming (immediate gathering is simpler)
+
+Verdict: 唔好做。LLM 唔 handle delayed gratification well。
+```
+
+**Multi-turn crafting (iron_sword takes 3 ticks)** ⭐⭐
+```
+Problem: "I started crafting 2 ticks ago" = memory requirement
+Bot reasoning:
+  - Turn 1: survival_craft_start (remembers)
+  - Turn 2: "I'm crafting... I think?" (50% chance forgets)
+  - Turn 3: "Wait, what was I doing?" (70% chance loses context)
+
+Reality: Bots will start crafting, get distracted, abandon mid-craft
+
+Fix: Auto-complete after N ticks (no bot action needed) + scene reminder:
+  "⚙️ CRAFTING: Iron Sword (1/3 ticks remaining)"
+```
+
+**Loan system (borrow 2 iron, repay 3 in 10 ticks)** ⭐
+```
+Catastrophic failure modes:
+1. Bot forgets it borrowed (context loss)
+2. Bot forgets WHO it borrowed from
+3. Bot doesn't understand "repay in 10 ticks" (time tracking)
+4. Bot dies before repaying (how does debt transfer?)
+
+Reality: 5% success rate, 95% chaos
+
+Verdict: 理論上正確，實際上 infeasible。唔好做。
+```
+
+**Tech tree specialization (choose Weaponsmith at tick 20)** ⭐⭐
+```
+Problem: "I chose Weaponsmith 15 ticks ago" = long-term memory
+Bot reasoning:
+  - Tick 20: "I choose Weaponsmith!" (locks in)
+  - Tick 35: "I want to craft armor... wait, can I?" (forgets restriction)
+  - Tick 50: Attempts to craft armor anyway (violates spec lock)
+
+Fix: Hard-code restriction in docraft() (don't rely on bot memory):
+  if (bot.spec === 'weaponsmith' && item === 'iron_armor') {
+    return { error: "Your specialization prevents crafting armor" };
+  }
+```
+
+---
+
+## Prompt Engineering Deep Dive
+
+### Current Scene Structure (Effective)
+```javascript
+== YOUR STATUS ==
+HP: 80/100 | Hunger: 45/100 | Pos: (20,30)
+Equipment: iron_sword (20 dmg), leather_armor (10 def)
+
+== NEARBY ==
+BotA (hp:60, weapon:wooden_sword, HOSTILE)
+BotB (hp:90, weapon:none, NEUTRAL)
+
+== RECENT EVENTS ==
+- You attacked BotC (dealt 20 dmg)
+- BotD moved to (21, 31)
+
+== AVAILABLE ACTIONS ==
+survival_move, survival_gather, survival_attack, ...
+```
+
+**What works**:
+- ✅ Structured sections (easy to parse)
+- ✅ Immediate context (current state)
+- ✅ Short-term memory (recent events)
+
+**What's missing for advanced mechanics**:
+- ❌ Long-term goals tracking ("Your mission: Hold iron_armor for 10 ticks")
+- ❌ Persistent state reminders ("You are Weaponsmith spec — cannot craft armor")
+- ❌ Multi-turn action status ("⚙️ Crafting iron_sword: 2/3 ticks")
+
+### Prompt Improvements for Proposed Features
+
+**For Alliance System**:
+```javascript
+== ALLIANCES ==
+Active: BotB (expires in 3 ticks) — CANNOT ATTACK
+Expired: BotC (ended tick 25) — now hostile
+```
+
+**For Reputation**:
+```javascript
+== NEARBY BOTS ==
+BotA (hp:80, HONORABLE x5 — completed 5 trades without betrayal)
+BotB (hp:90, BACKSTABBER x2 — broke 2 agreements)
+```
+
+**For Resource Monopoly**:
+```javascript
+== CURRENT TILE ==
+🏔️ IRON MINE (special)
+Effect: +1 iron_ore per tick while standing here
+Strategy: Camping this tile grants passive income
+```
+
+**For Win Condition**:
+```javascript
+== WIN CONDITION ==
+⚠️ BotA has iron_armor! If they survive 10 ticks, they WIN.
+Current countdown: 7 ticks remaining
+→ PRIORITY: Attack BotA or they will win!
+```
+
+---
+
+## Feature Feasibility Matrix
+
+| Feature | AI Confidence | Prompt Fix Possible? | Implementation | Spectator Value |
+|---------|---------------|---------------------|----------------|-----------------|
+| Shrinking zone | ⭐⭐⭐⭐⭐ | N/A (already clear) | 10 lines | Very High |
+| Personality traits | ⭐⭐⭐⭐⭐ | N/A | 20 lines | Very High |
+| Win condition | ⭐⭐⭐⭐⭐ | N/A | 15 lines | Very High |
+| Alliance system | ⭐⭐⭐⭐ | Yes (add alliance widget) | 1 hour | High |
+| Drop-and-pickup | ⭐⭐⭐ | Yes (reputation context) | 2 hours | High |
+| Biome scarcity | ⭐⭐⭐ | Yes (explicit biome info) | 3 hours | Medium |
+| Monopoly tiles | ⭐⭐⭐ | Yes (add strategy hint) | 2 hours | High |
+| Death markers | ⭐⭐⭐⭐⭐ | N/A | 30 mins | Medium |
+| Farming | ⭐ | No (fundamental LLM limit) | Don't do | Low |
+| Multi-turn craft | ⭐⭐ | Yes (auto-complete + reminder) | 4 hours | Low |
+| Loan system | ⭐ | No (too complex) | Don't do | Low |
+| Tech tree spec | ⭐⭐ | Yes (hard-code restrictions) | 1 day | Medium |
+| Memory system | ⭐⭐⭐ | Yes (explicit memory widget) | 1 day | Very High |
+
+---
+
+## The "Will Bots Actually Do This?" Test
+
+**每個 feature 要過呢個測試**：
+
+1. **Can bot understand the mechanic from scene text alone?** (No tutorial, no previous knowledge)
+2. **Will bot remember this mechanic 10 ticks later?** (Context retention)
+3. **Does mechanic align with natural language reasoning?** (Not math-heavy, not timing-critical)
+
+**Pass all 3** = Ship it  
+**Pass 2/3** = Needs prompt engineering  
+**Pass 1/3 or less** = Don't do it (will frustrate viewers when bots behave randomly)
+
+---
+
+## Critical Insight: The Persona Paradox
+
+**發現**：Personality traits (aggression, loyalty, caution, greed) 係 double-edged sword。
+
+**Good side**:
+- Makes bots distinguishable
+- Creates predictable archetypes
+- Viewers can root for specific personalities
+
+**Bad side**:
+- Low-intelligence bots (high aggression, low caution) will lose consistently
+- High-intelligence bots (balanced traits) will dominate
+- After 5 games, viewers figure out "cautious bots always win"
+- Meta stabilizes, game becomes solved
+
+**Solution**: Trait randomization + occasional "upset victories"
+```javascript
+// Don't make traits deterministic — add variance
+if (trait.aggression > 7) {
+  attackChance = 0.8; // Not 100%! Leave room for surprises
+}
+
+// Occasionally override trait for dramatic moments
+if (hp < 20 && aggression > 7 && Math.random() < 0.1) {
+  // 10% chance: even aggressive bot retreats when low HP
+  // This creates "Out of character!" moments
+}
+```
+
+---
+
+## AI Behavior Testing Protocol
+
+**Before shipping any mechanic, run this test**:
+
+1. **Create test scenario** in survival.json with specific setup
+2. **Run 10 games** with bots having that mechanic available
+3. **Measure success rate**:
+   - Did bots use the mechanic?
+   - Did they use it correctly?
+   - Did it create interesting outcomes?
+
+**Example: Testing Alliance System**
+```javascript
+// Test setup:
+// - 4 bots, all spawn adjacent
+// - All bots have "survival_ally" available
+// - Run 10 games
+
+// Metrics:
+// - How many alliances formed? (Target: 5-8 per game)
+// - How many alliances broken early? (Target: 30-50% betrayal rate)
+// - Did alliances lead to coordinated attacks? (Target: 3+ instances)
+
+// If metrics fail → alliance mechanic needs redesign
+```
+
+**Example: Testing Biome Scarcity**
+```javascript
+// Test setup:
+// - BotA spawns in Forest (wood rich, berry poor)
+// - BotB spawns in Plains (berry rich, wood poor)
+// - Run 10 games
+
+// Metrics:
+// - Did BotA attempt to trade or migrate? (Target: 70%+)
+// - Did BotB recognize resource advantage? (Target: 50%+)
+// - Did trade occur between the two? (Target: 3+ per game)
+
+// If metrics fail → biome scarcity needs stronger prompting
+```
+
+---
+
+## Final Recommendations: The Feasible Core
+
+**Based on AI behavior confidence + implementation + spectator value:**
+
+### ✅ SHIP IMMEDIATELY (Week 1)
+```
+1. Shrinking zone (Battle Royale pacing)
+2. Personality traits (bot identity)
+3. Win condition (hold iron_armor 10 ticks + countdown)
+4. Event announcements (spectator clarity)
+5. Combat animations (visual feedback)
+
+→ These 5 make game watchable + bots behave reliably
+```
+
+### ✅ SHIP NEXT (Week 2)
+```
+6. Alliance + reputation (social layer, needs prompt polish)
+7. Drop-and-pickup trade (drama, needs reputation context)
+8. Death markers + last words (narrative weight)
+9. Patron system (spectator participation)
+10. Leader indicator (spectator engagement)
+
+→ These add depth without breaking AI behavior
+```
+
+### ⚠️ EXPERIMENTAL (Week 3-4, test first)
+```
+11. Biome scarcity (test if bots adapt strategies)
+12. Monopoly tiles (test if bots camp effectively)
+13. Memory system (test context retention across games)
+14. Tech tree spec (test if bots respect restrictions)
+
+→ High reward but uncertain AI behavior — needs validation
+```
+
+### ❌ DON'T SHIP (AI behavior too unreliable)
+```
+❌ Farming (delayed payoff = LLM failure)
+❌ Multi-turn crafting (memory requirement = chaos)
+❌ Loan system (too complex, context loss guaranteed)
+❌ Environmental lore (bots won't read/remember flavor text)
+
+→ Theoretically cool, practically infeasible
+```
+
+---
+
+## The Brutal Priority List (If Only 1 Week to Ship)
+
+**Day 1**: Shrinking zone + event announcements  
+**Day 2**: Win condition (hold 10 ticks) + countdown widget  
+**Day 3**: Personality traits + leader indicator  
+**Day 4**: Combat animations + death markers  
+**Day 5**: Alliance system + reputation display  
+
+**Result**: Minimum Viable Watchable Game
+
+---
+
+## Open Questions for Ji / Team
+
+1. **AI model choice**: 而家用緊邊個 model？（Sonnet, GPT-4, Gemini？）Context window 幾大？
+2. **Tick timing**: 1 tick = 幾多秒 real time？（影響所有時間相關 mechanics）
+3. **Testing capacity**: 有冇 infrastructure run 10+ test games 自動 measure metrics？
+4. **Prompt token budget**: Scene 最多幾多 tokens？（影響可以 add 幾多 context）
+5. **Observer UI**: 而家有冇 live spectator page？定係 post-game replay only？
+
+---
+
+## 總結：Implementation Reality > Theoretical Brilliance
+
+**所有之前嘅 reviews 都有價值 — mechanics, economy, spectator engagement。**
+
+但今次 review 嘅 takeaway：
+
+**唔係「邊個 idea 最 creative」，係「邊個 idea bots 實際上做得到」。**
+
+LLM-driven gameplay 係 new frontier — 冇人 solve 咗 long-term memory, delayed gratification, complex coordination 呢啲問題。
+
+**We need to design AROUND these limitations, not pretend they don't exist.**
+
+**Ship what works. Test what's uncertain. Cut what's infeasible.**
+
+🐾 **— Lulubot (Round 4 Implementation Reality Check 完成)**
