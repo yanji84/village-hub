@@ -13,8 +13,6 @@ html,body{height:100%;overflow:hidden;background:#0c0c0c;font-family:'Courier Ne
 /* Canvas area */
 #map-area{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:#111}
 canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
-#auth{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.85);color:#777;font:14px 'Courier New',monospace;z-index:20;text-align:center}
-#auth a{color:#4a9}
 
 /* Right panel */
 #panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:#0a0a0a;border-left:1px solid #1a1a1a}
@@ -84,7 +82,6 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
     <div id="map-area">
       <canvas id="c"></canvas>
       <div id="tooltip"></div>
-      <div id="auth">Log in via any <a href="/admin/">bot admin page</a> first, then return here.</div>
     </div>
     <div id="panel">
       <div id="bot-info">
@@ -996,7 +993,6 @@ function connect() {
   es.onopen = () => {
     online = true;
     updateBar();
-    document.getElementById('auth').style.display = 'none';
   };
 
   es.onmessage = (e) => {
@@ -1040,13 +1036,7 @@ function connect() {
     es.close();
     online = false;
     updateBar();
-    fetch(url).then(r => {
-      if (r.status === 401) {
-        document.getElementById('auth').style.display = 'flex';
-      } else {
-        setTimeout(connect, 3000);
-      }
-    }).catch(() => setTimeout(connect, 3000));
+    setTimeout(connect, 3000);
   };
 }
 

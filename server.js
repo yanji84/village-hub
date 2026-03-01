@@ -29,7 +29,6 @@ import {
   computeQualityMetrics,
   shouldSkipForCost,
   readBotDailyCost as readBotDailyCostImpl,
-  validateObserverAuth as validateObserverAuthImpl,
   trackInteractions,
   updateCoLocation,
   updateRelationships,
@@ -81,7 +80,6 @@ const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || (isGridGa
 const STATE_FILE = join(__dirname, `state-${VILLAGE_GAME}.json`);
 const MEMORY_FILENAME = isGridGame ? 'survival.md' : 'village.md';
 const USAGE_FILE = join(paths.PROJECT_DIR, 'api-router', 'usage.json');
-const ADMIN_TOKENS_FILE = join(paths.PROJECT_DIR, 'portal', 'admin-tokens.json');
 const LOGS_DIR = join(__dirname, 'logs');
 
 // --- Event log file (JSONL, one file per day) ---
@@ -1079,18 +1077,6 @@ async function tick() {
   }
 }
 
-// --- Auth helper ---
-
-async function validateObserverAuth(req) {
-  const cookieHeader = req.headers.cookie || '';
-  try {
-    const tokensRaw = await readFile(ADMIN_TOKENS_FILE, 'utf-8');
-    const tokens = JSON.parse(tokensRaw);
-    return validateObserverAuthImpl(cookieHeader, tokens);
-  } catch { /* no tokens file */ }
-  return null;
-}
-
 // --- HTTP Server ---
 
 const server = createServer(async (req, res) => {
@@ -1251,14 +1237,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (path === '/events' && req.method === 'GET') {
-    const authedBot = await validateObserverAuth(req);
-    if (!authedBot) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized — log in via admin page first' }));
-      return;
-    }
-
-    // SSE stream
+    // SSE stream — public, no auth required
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -1267,7 +1246,7 @@ const server = createServer(async (req, res) => {
     });
     res.flushHeaders();
 
-    const observer = { res, botName: authedBot };
+    const observer = { res, botName: 'observer' };
     observers.add(observer);
 
     // Send initial state
@@ -1349,13 +1328,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (path === '/api/logs' && req.method === 'GET') {
-    const authedBot = await validateObserverAuth(req);
-    if (!authedBot) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized' }));
-      return;
-    }
-
+    // Public — no auth required
     const beforeTick = url.searchParams.has('before') ? parseInt(url.searchParams.get('before'), 10) : Infinity;
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
 

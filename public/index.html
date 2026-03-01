@@ -38,8 +38,6 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges}
 .le .w{color:#7af;font-style:italic}.le .m{color:#da5}
 .le .j{color:#4a9}.le .l{color:#e55}.le .o{color:#555;font-style:italic}.le .k{color:#333}
 .tick-sep{border:0;border-top:1px solid #1a1a1a;margin:4px 0}
-#auth{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.7);color:#777;font:14px -apple-system,sans-serif;z-index:20}
-#auth a{color:#4a9}
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-track{background:#0a0a0a}
 ::-webkit-scrollbar-thumb{background:#1a1a1a;border-radius:2px}
@@ -55,7 +53,6 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges}
   <div id="left">
     <div id="map-wrap">
       <canvas id="c"></canvas>
-      <div id="auth">Log in via any <a href="/admin/">bot admin page</a> first, then return here.</div>
     </div>
     <div id="bar">
       <span class="lbl">Village</span>
@@ -714,14 +711,11 @@ function connect() {
   basePath = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
   const url = basePath ? `${basePath}/events` : '/events';
   const es = new EventSource(url);
-  es.onopen = () => { online=true; updateBar(); document.getElementById('auth').style.display='none'; };
+  es.onopen = () => { online=true; updateBar(); };
   es.onmessage = (e) => { try { onEvent(JSON.parse(e.data)); } catch {} };
   es.onerror = () => {
     es.close(); online=false; updateBar();
-    fetch(url).then(r => {
-      if (r.status===401) document.getElementById('auth').style.display='flex';
-      else setTimeout(connect, 3000);
-    }).catch(() => setTimeout(connect, 3000));
+    setTimeout(connect, 3000);
   };
 }
 
