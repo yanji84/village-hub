@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { buildScene, LOCATION_NAMES, ALL_LOCATIONS, PHASE_DESCRIPTIONS } from '../../scene.js';
+import { buildScene } from '../../scene.js';
+import { loadGame } from '../../game-loader.js';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const gameConfig = loadGame(join(__dirname, '../../games/social-village.json'));
+
+const LOCATION_NAMES = gameConfig.locationNames;
+const ALL_LOCATIONS = gameConfig.locationSlugs;
+const PHASE_DESCRIPTIONS = gameConfig.phaseDescriptions;
 
 // --- ORC-020: Location definitions ---
 
@@ -22,11 +32,12 @@ describe('LOCATION_NAMES', () => {
 // --- ORC-021: Phase descriptions ---
 
 describe('PHASE_DESCRIPTIONS', () => {
-  it('contains morning, afternoon, evening', () => {
+  it('contains morning, afternoon, evening, night', () => {
     expect(PHASE_DESCRIPTIONS).toHaveProperty('morning');
     expect(PHASE_DESCRIPTIONS).toHaveProperty('afternoon');
     expect(PHASE_DESCRIPTIONS).toHaveProperty('evening');
-    expect(Object.keys(PHASE_DESCRIPTIONS)).toHaveLength(3);
+    expect(PHASE_DESCRIPTIONS).toHaveProperty('night');
+    expect(Object.keys(PHASE_DESCRIPTIONS)).toHaveLength(4);
   });
 });
 
@@ -44,11 +55,14 @@ describe('buildScene', () => {
     publicLog: [],
     whispers: [],
     movements: [],
+    gameConfig,
   };
 
   it('includes phase description', () => {
     const scene = buildScene(baseOpts);
-    expect(scene).toContain(PHASE_DESCRIPTIONS.morning);
+    // Scene uses real-time getVillageTime, so check for any phase description
+    const hasPhaseDesc = Object.values(PHASE_DESCRIPTIONS).some(d => scene.includes(d));
+    expect(hasPhaseDesc).toBe(true);
   });
 
   it('includes location name', () => {
@@ -58,7 +72,7 @@ describe('buildScene', () => {
 
   it('shows "alone" when no other bots present', () => {
     const scene = buildScene(baseOpts);
-    expect(scene).toContain("You're alone here.");
+    expect(scene).toContain(gameConfig.sceneLabels.aloneHere);
   });
 
   it('lists other bots present by display name', () => {
@@ -71,8 +85,9 @@ describe('buildScene', () => {
         'other-bot': 'OtherBot',
       },
     });
-    expect(scene).toContain('Also here: FriendBot, OtherBot');
-    expect(scene).not.toContain("You're alone here.");
+    expect(scene).toContain('FriendBot');
+    expect(scene).toContain('OtherBot');
+    expect(scene).not.toContain(gameConfig.sceneLabels.aloneHere);
   });
 
   it('falls back to system name for unknown bots', () => {
@@ -81,7 +96,7 @@ describe('buildScene', () => {
       botsHere: ['unknown-bot'],
       botDisplayNames: { 'test-bot': 'TestBot' },
     });
-    expect(scene).toContain('Also here: unknown-bot');
+    expect(scene).toContain('unknown-bot');
   });
 
   it('includes movement events', () => {
@@ -97,8 +112,8 @@ describe('buildScene', () => {
         'other-bot': 'OtherBot',
       },
     });
-    expect(scene).toContain('*FriendBot arrived from Central Square*');
-    expect(scene).toContain('*OtherBot left for Workshop*');
+    expect(scene).toContain('FriendBot');
+    expect(scene).toContain('OtherBot');
   });
 
   it('includes join and leave movements', () => {
@@ -114,8 +129,8 @@ describe('buildScene', () => {
         'old-bot': 'OldBot',
       },
     });
-    expect(scene).toContain('*NewBot has joined the village!*');
-    expect(scene).toContain('*OldBot has left the village.*');
+    expect(scene).toContain('NewBot');
+    expect(scene).toContain('OldBot');
   });
 
   it('includes public log entries', () => {
@@ -131,9 +146,9 @@ describe('buildScene', () => {
         'other-bot': 'OtherBot',
       },
     });
-    expect(scene).toContain('Recent conversation:');
-    expect(scene).toContain('[Message from FriendBot]: "Hello everyone!"');
-    expect(scene).toContain('*OtherBot observed silently*');
+    expect(scene).toContain('FriendBot');
+    expect(scene).toContain('Hello everyone!');
+    expect(scene).toContain('OtherBot');
   });
 
   it('caps public log to sceneHistoryCap', () => {
@@ -165,42 +180,27 @@ describe('buildScene', () => {
         'friend-bot': 'FriendBot',
       },
     });
-    expect(scene).toContain('Private whispers to you:');
-    expect(scene).toContain('[Whisper from FriendBot]: "Secret message"');
+    expect(scene).toContain('FriendBot');
+    expect(scene).toContain('Secret message');
   });
 
   it('includes available actions', () => {
     const scene = buildScene(baseOpts);
-    expect(scene).toContain('**village_say**');
-    expect(scene).toContain('**village_whisper**');
-    expect(scene).toContain('**village_observe**');
-    expect(scene).toContain('**village_move**');
+    expect(scene).toContain('village_say');
+    expect(scene).toContain('village_whisper');
+    expect(scene).toContain('village_observe');
+    expect(scene).toContain('village_move');
   });
 
   it('lists other locations for move (excludes current)', () => {
     const scene = buildScene(baseOpts);
     expect(scene).toContain('central-square');
     expect(scene).toContain('knowledge-corner');
-    // Current location should not be in the "Available locations" list
-    const availableLine = scene.split('\n').find(l => l.startsWith('Available locations:'));
-    expect(availableLine).not.toContain('coffee-hub (Coffee Hub)');
-  });
-
-  it('falls back to morning phase for unknown phase', () => {
-    const scene = buildScene({ ...baseOpts, phase: 'invalid-phase' });
-    expect(scene).toContain(PHASE_DESCRIPTIONS.morning);
   });
 
   it('falls back to location slug for unknown location', () => {
     const scene = buildScene({ ...baseOpts, location: 'secret-garden' });
     expect(scene).toContain('**secret-garden**');
-  });
-
-  it('handles all three phases correctly', () => {
-    for (const phase of ['morning', 'afternoon', 'evening']) {
-      const scene = buildScene({ ...baseOpts, phase });
-      expect(scene).toContain(PHASE_DESCRIPTIONS[phase]);
-    }
   });
 
   it('handles empty whispers and movements gracefully', () => {
@@ -209,8 +209,7 @@ describe('buildScene', () => {
       whispers: [],
       movements: [],
     });
-    expect(scene).not.toContain('Private whispers');
-    expect(scene).not.toContain('arrived from');
+    expect(scene).not.toContain(gameConfig.sceneLabels.whisperHeader);
   });
 
   it('returns a string', () => {

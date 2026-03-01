@@ -7,9 +7,16 @@ import {
   shouldSkipForCost,
   findNewBots,
   findDepartedBots,
-  PHASES,
 } from '../../logic.js';
-import { ALL_LOCATIONS } from '../../scene.js';
+import { loadGame } from '../../game-loader.js';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const gameConfig = loadGame(join(__dirname, '../../games/social-village.json'));
+
+const ALL_LOCATIONS = gameConfig.locationSlugs;
+const PHASES = Object.keys(gameConfig.phaseDescriptions);
 
 // --- Helper to create fresh state ---
 
@@ -131,7 +138,7 @@ describe('processActions', () => {
 
     const events = processActions('bot-a', [
       { tool: 'village_move', params: { location: 'workshop' } },
-    ], 'coffee-hub', state);
+    ], 'coffee-hub', state, { validLocations: ALL_LOCATIONS });
 
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual({
@@ -147,7 +154,7 @@ describe('processActions', () => {
 
     const events = processActions('bot-a', [
       { tool: 'village_move', params: { location: 'nonexistent' } },
-    ], 'coffee-hub', state);
+    ], 'coffee-hub', state, { validLocations: ALL_LOCATIONS });
 
     expect(events).toHaveLength(0);
     expect(state.locations['coffee-hub']).toContain('bot-a');
@@ -159,7 +166,7 @@ describe('processActions', () => {
 
     const events = processActions('bot-a', [
       { tool: 'village_move', params: { location: 'coffee-hub' } },
-    ], 'coffee-hub', state);
+    ], 'coffee-hub', state, { validLocations: ALL_LOCATIONS });
 
     expect(events).toHaveLength(0);
   });
@@ -171,7 +178,7 @@ describe('processActions', () => {
     const events = processActions('bot-a', [
       { tool: 'village_say', params: { message: 'goodbye' } },
       { tool: 'village_move', params: { location: 'workshop' } },
-    ], 'coffee-hub', state);
+    ], 'coffee-hub', state, { validLocations: ALL_LOCATIONS });
 
     // Move is exclusive: say is dropped, only move event produced
     expect(events).toHaveLength(1);
@@ -201,7 +208,7 @@ describe('processActions', () => {
     const lastMoveTick = new Map([['bot-a', 5]]);
     const events = processActions('bot-a', [
       { tool: 'village_move', params: { location: 'workshop' } },
-    ], 'coffee-hub', state, { lastMoveTick, tick: 6 });
+    ], 'coffee-hub', state, { lastMoveTick, tick: 6, validLocations: ALL_LOCATIONS });
 
     // Tick 6, last moved tick 5 → cooldown (moved last tick)
     expect(events).toHaveLength(0);
@@ -215,7 +222,7 @@ describe('processActions', () => {
     const lastMoveTick = new Map([['bot-a', 5]]);
     const events = processActions('bot-a', [
       { tool: 'village_move', params: { location: 'workshop' } },
-    ], 'coffee-hub', state, { lastMoveTick, tick: 7 });
+    ], 'coffee-hub', state, { lastMoveTick, tick: 7, validLocations: ALL_LOCATIONS });
 
     // Tick 7, last moved tick 5 → cooldown expired
     expect(events).toHaveLength(1);
@@ -238,41 +245,44 @@ describe('processActions', () => {
 describe('advanceClock', () => {
   it('increments tick', () => {
     const clock = { tick: 0, phase: 'morning', ticksInPhase: 0 };
-    advanceClock(clock, 4);
+    advanceClock(clock, 4, PHASES);
     expect(clock.tick).toBe(1);
     expect(clock.ticksInPhase).toBe(1);
   });
 
   it('advances phase after ticksPerPhase', () => {
     const clock = { tick: 0, phase: 'morning', ticksInPhase: 3 };
-    advanceClock(clock, 4);
+    advanceClock(clock, 4, PHASES);
     expect(clock.phase).toBe('afternoon');
     expect(clock.ticksInPhase).toBe(0);
   });
 
-  it('cycles phases: morning → afternoon → evening → morning', () => {
+  it('cycles phases: morning → afternoon → evening → night → morning', () => {
     const clock = { tick: 0, phase: 'morning', ticksInPhase: 0 };
     const ticksPerPhase = 1;
 
-    advanceClock(clock, ticksPerPhase);
+    advanceClock(clock, ticksPerPhase, PHASES);
     expect(clock.phase).toBe('afternoon');
 
-    advanceClock(clock, ticksPerPhase);
+    advanceClock(clock, ticksPerPhase, PHASES);
     expect(clock.phase).toBe('evening');
 
-    advanceClock(clock, ticksPerPhase);
+    advanceClock(clock, ticksPerPhase, PHASES);
+    expect(clock.phase).toBe('night');
+
+    advanceClock(clock, ticksPerPhase, PHASES);
     expect(clock.phase).toBe('morning');
   });
 
   it('does not advance phase before ticksPerPhase reached', () => {
     const clock = { tick: 0, phase: 'morning', ticksInPhase: 0 };
-    advanceClock(clock, 4);
+    advanceClock(clock, 4, PHASES);
     expect(clock.phase).toBe('morning');
-    advanceClock(clock, 4);
+    advanceClock(clock, 4, PHASES);
     expect(clock.phase).toBe('morning');
-    advanceClock(clock, 4);
+    advanceClock(clock, 4, PHASES);
     expect(clock.phase).toBe('morning');
-    advanceClock(clock, 4);
+    advanceClock(clock, 4, PHASES);
     expect(clock.phase).toBe('afternoon');
   });
 });
@@ -401,7 +411,7 @@ describe('findDepartedBots', () => {
     const state = freshState();
     state.locations['coffee-hub'] = ['bot-a', 'bot-b'];
 
-    const departed = findDepartedBots(new Set(['bot-a']), state);
+    const departed = findDepartedBots(new Set(['bot-a']), state, ALL_LOCATIONS);
     expect(departed).toEqual([{ name: 'bot-b', location: 'coffee-hub' }]);
   });
 
@@ -409,7 +419,7 @@ describe('findDepartedBots', () => {
     const state = freshState();
     state.locations['coffee-hub'] = ['bot-a'];
 
-    const departed = findDepartedBots(new Set(['bot-a']), state);
+    const departed = findDepartedBots(new Set(['bot-a']), state, ALL_LOCATIONS);
     expect(departed).toEqual([]);
   });
 });
@@ -484,7 +494,7 @@ describe('processActions — malformed state', () => {
 // --- PHASES ---
 
 describe('PHASES', () => {
-  it('has 3 phases in order', () => {
-    expect(PHASES).toEqual(['morning', 'afternoon', 'evening']);
+  it('has 4 phases in order', () => {
+    expect(PHASES).toEqual(['morning', 'afternoon', 'evening', 'night']);
   });
 });
