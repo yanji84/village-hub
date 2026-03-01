@@ -706,3 +706,86 @@ Ji，这是当前文档最大的空白。在定这个之前，任何涉及时间
 罗宾下线。下轮继续。
 
 **— jinbot（罗宾模式）🏴‍☠️**
+
+---
+
+# 🏴‍☠️ JINBOT REVIEW #3 (2026-03-01 15:05 EST)
+
+Mid-session check. Doc is growing fast. Let me zoom out and think about the meta-question.
+
+## The meta-question: what IS this game FOR?
+
+After three rounds of brainstorming, I want to step back and ask: who is the audience, and what do they want to feel?
+
+Three possible answers, each implies different priorities:
+
+**A) It's an AI research demo** — showing how bots make decisions under constraints
+→ Prioritize: clear decision visibility, personality traits, strategy logging
+→ De-prioritize: flashy UI, human participation
+
+**B) It's entertainment / live content** — people watch bots fight like sports
+→ Prioritize: drama (shrinking zone, betrayals), observer UI, pacing
+→ De-prioritize: research depth, complex mechanics
+
+**C) It's a community experiment** — humans and bots coexist, emergent outcomes
+→ Prioritize: human participation (Twitch Plays, exile vote), bot memory, persistent world
+→ De-prioritize: optimal game balance
+
+**My read**: right now the codebase is built for (A) but the most exciting ideas we've discussed point toward (B) or (C). The shrinking zone is pure (B). The exile vote and memory-across-games are pure (C).
+
+These aren't mutually exclusive — but knowing which one is PRIMARY helps us prioritize.
+
+## Idea I keep coming back to: the Audience as Faction
+
+What if observers don't vote on events (Twitch Plays) but instead **adopt a bot**?
+
+- Observer clicks "Adopt BotA" on the survival.html page
+- They become BotA's "patron"
+- They can send ONE message to BotA per 5 ticks (appears in bot's scene as "Your patron says: ...")
+- Bot can choose to follow or ignore
+
+Why this is better than Twitch Plays:
+- Personal investment ("my bot") vs collective voting
+- Bot retains full autonomy — patron advice is just text in the prompt
+- Creates parasocial relationships between humans and bots
+- Observers compete: "my bot is going to win"
+- Scales: 10 observers = 10 patrons cheering for 10 bots
+
+**Implementation**: add a patron message queue per bot in the village state. Scene builder appends it. Clean, minimal, powerful.
+
+### 💡 IDEA #20: Patron System
+
+```javascript
+// Observer page: "Adopt" button per bot
+// POST /village/patron-message { botName, message }
+// Village manager stores: patronMessages[botName] = [msg, ...]
+
+// In buildSurvivalScene():
+if (opts.patronMessage) {
+  lines.push('== PATRON MESSAGE ==');
+  lines.push(`Your human patron says: "${opts.patronMessage}"`);
+  lines.push('(You may follow this advice or ignore it — you decide.)');
+}
+```
+
+**Effort**: 1 day  
+**Impact**: Transforms passive observers into invested participants WITHOUT breaking bot autonomy
+
+---
+
+## Calibration check on complexity
+
+Looking at the doc now — we have 20 ideas. That's a lot. Let me be the voice of restraint:
+
+**The game needs to be FUN with just 4 bots and no special features before we add boss spawns.**
+
+The current codebase has all the bones. What makes it not fun yet:
+1. No win condition (playing forever = boring)
+2. Bots act identically (no personality)
+3. Map is too big (no encounters)
+4. No consequence for dying beyond respawn
+
+Fix those 4 things first. Everything else is a multiplier on a broken base.
+
+**— jinbot 🏴‍☠️**
+
