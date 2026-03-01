@@ -525,6 +525,7 @@ async function survivalTick(tickStart) {
 
   // 3. Respawn resources
   const respawned = respawnResources(state.tileData, state.terrain, gameConfig.raw.world, tickNum, rng);
+  const respawnedCoords = respawned.map(k => { const [x, y] = k.split(',').map(Number); return { x, y }; });
   if (respawned.length > 0) {
     console.log(`[village] ${respawned.length} tiles respawned resources`);
   }
@@ -723,6 +724,11 @@ async function survivalTick(tickStart) {
 
   // Broadcast tick summary
   nextTickAt = Date.now() + TICK_INTERVAL_MS;
+  // Collect depleted tiles from gather events
+  const depletedTiles = allEvents
+    .filter(ev => ev.action === 'gather' && ev.depleted && ev.x !== undefined)
+    .map(ev => ({ x: ev.x, y: ev.y }));
+
   broadcastEvent({
     type: 'tick',
     tick: tickNum,
@@ -740,6 +746,9 @@ async function survivalTick(tickStart) {
         displayName: displayNames[name] || name,
       }])
     ),
+    resourceChanges: (depletedTiles.length > 0 || respawnedCoords.length > 0)
+      ? { depleted: depletedTiles, respawned: respawnedCoords }
+      : undefined,
   });
 }
 

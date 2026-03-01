@@ -254,12 +254,14 @@ export function doGather(botName, botState, worldState, gameConfig, currentTick)
     tile.depletedAt = currentTick;
   }
 
+  const depleted = remaining.length === 0;
   return [{
     action: 'gather',
     bot: botName,
     items: gathered,
     x: botState.x,
     y: botState.y,
+    depleted,
   }];
 }
 

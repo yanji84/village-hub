@@ -942,7 +942,24 @@ function processTick(d) {
     }
   }
 
-  // Update resource tiles if provided
+  // Incremental resource updates from tick
+  if (d.resourceChanges) {
+    let changed = false;
+    if (d.resourceChanges.depleted) {
+      for (const r of d.resourceChanges.depleted) {
+        resourceTiles.delete(r.x + ',' + r.y);
+        changed = true;
+      }
+    }
+    if (d.resourceChanges.respawned) {
+      for (const r of d.resourceChanges.respawned) {
+        resourceTiles.add(r.x + ',' + r.y);
+        changed = true;
+      }
+    }
+    if (changed && terrain) prerenderTerrain();
+  }
+  // Full resource sync (reconnect)
   if (d.resources) {
     resourceTiles.clear();
     for (const r of d.resources) {
