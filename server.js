@@ -736,6 +736,7 @@ async function survivalTick(tickStart) {
     botStates: Object.fromEntries(
       Object.entries(state.bots).map(([name, bs]) => [name, {
         x: bs.x, y: bs.y, health: bs.health, hunger: bs.hunger, alive: bs.alive,
+        equipment: bs.equipment, inventory: bs.inventory,
         displayName: displayNames[name] || name,
       }])
     ),
@@ -1278,9 +1279,13 @@ const server = createServer(async (req, res) => {
         bots: Object.fromEntries(
           Object.entries(state.bots).map(([name, bs]) => [name, {
             x: bs.x, y: bs.y, health: bs.health, hunger: bs.hunger, alive: bs.alive,
+            equipment: bs.equipment, inventory: bs.inventory,
             displayName: participants.get(name)?.displayName || name,
           }])
         ),
+        resources: Object.keys(state.tileData)
+          .filter(k => state.tileData[k].resources?.length > 0)
+          .map(k => { const [x, y] = k.split(',').map(Number); return { x, y }; }),
         recentEvents: (state.recentEvents || []).slice(-20),
       });
     } else {
