@@ -65,7 +65,7 @@ console.log(`[village] Loaded game: ${gameConfig.raw.id} (${gameConfig.raw.name}
 
 // --- Config ---
 const PORT = parseInt(process.env.VILLAGE_PORT || '7001', 10);
-const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || '120000', 10); // 2 minutes
+const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || (isGridGame ? '60000' : '120000'), 10);
 const TICKS_PER_PHASE = parseInt(process.env.VILLAGE_TICKS_PER_PHASE || '4', 10);
 const SCENE_HISTORY_CAP = parseInt(process.env.VILLAGE_SCENE_HISTORY_CAP || '10', 10);
 const VILLAGE_SECRET = process.env.VILLAGE_SECRET || '';
