@@ -30,6 +30,9 @@ import {
   updateCoLocation,
   updateRelationships,
   updateEmotions,
+  rollVillageEvent,
+  rollConversationSpice,
+  decayRelationships,
 } from './logic.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -72,6 +75,9 @@ let state = {
   emptyTicks: {},
   relationships: {},
   emotions: {},
+  eventState: {},
+  spiceState: {},
+  stagnation: {},
 };
 let paused = false;
 let tickInProgress = false;
@@ -100,6 +106,9 @@ async function loadState() {
       relationships: loaded.relationships || {},
       emotions: loaded.emotions || {},
       villageCosts: loaded.villageCosts || {},
+      eventState: loaded.eventState || {},
+      spiceState: loaded.spiceState || {},
+      stagnation: loaded.stagnation || {},
     };
     for (const loc of ALL_LOCATIONS) {
       if (!state.locations[loc]) state.locations[loc] = [];
@@ -404,6 +413,26 @@ async function tick() {
     let botsSkippedCost = 0;
     let errors = 0;
 
+    // Roll village events and conversation spice for occupied locations
+    const activeEvents = new Map();  // location → event text
+    const activeSpice = new Map();   // location → spice text
+    for (const loc of ALL_LOCATIONS) {
+      const botsAtLoc = state.locations[loc];
+      if (botsAtLoc.length === 0) continue;
+      const event = rollVillageEvent(tickNum, loc, state.eventState);
+      if (event) {
+        activeEvents.set(loc, event);
+        console.log(`[village] event at ${loc}: ${event}`);
+        broadcastEvent({ type: 'village_event', tick: tickNum, location: loc, locationName: LOCATION_NAMES[loc], text: event });
+      }
+      const spice = rollConversationSpice(tickNum, loc, botsAtLoc.length, state.spiceState);
+      if (spice) {
+        activeSpice.set(loc, spice);
+        console.log(`[village] spice at ${loc}: ${spice}`);
+        broadcastEvent({ type: 'conversation_spice', tick: tickNum, location: loc, locationName: LOCATION_NAMES[loc], text: spice });
+      }
+    }
+
     // Build all scene requests across all locations from a single snapshot
     const allSceneRequests = [];
 
@@ -457,6 +486,8 @@ async function tick() {
           emotions: state.emotions,
           canMove,
           villageMemory: villageSummaries.get(botName) || '',
+          villageEvent: activeEvents.get(loc) || '',
+          conversationSpice: activeSpice.get(loc) || '',
         });
 
         allSceneRequests.push({ botName, port, conversationId, scene, loc });
@@ -529,8 +560,11 @@ async function tick() {
       console.log(`[village] relationship: ${change.fromDisplay} & ${change.toDisplay} → ${change.label || '(none)'}`);
     }
 
-    // Track emotions
-    const emotionChanges = updateEmotions(state, allEvents, allResults, displayNames);
+    // Decay relationships for non-co-located pairs
+    decayRelationships(state);
+
+    // Track emotions (pass active events/spice for impulse triggers)
+    const emotionChanges = updateEmotions(state, allEvents, allResults, displayNames, { activeEvents, activeSpice });
     for (const change of emotionChanges) {
       broadcastEvent({
         type: 'emotion',

@@ -86,6 +86,8 @@ export function buildScene({
   emotions,
   canMove = true,
   villageMemory = '',
+  villageEvent = '',
+  conversationSpice = '',
 }) {
   const lines = [];
 
@@ -123,7 +125,11 @@ export function buildScene({
   }
 
   // Current emotion
-  const EMOTION_ZH = { happy: '开心', content: '满足', excited: '兴奋', lonely: '孤独', bored: '无聊' };
+  const EMOTION_ZH = {
+    happy: '开心', content: '满足', excited: '兴奋', lonely: '孤独', bored: '无聊',
+    curious: '好奇', frustrated: '烦躁', nostalgic: '怀旧', playful: '调皮',
+    skeptical: '怀疑', anxious: '焦虑', mischievous: '促狭',
+  };
   if (emotions && emotions[botName] && emotions[botName].emotion !== 'neutral') {
     const emoZh = EMOTION_ZH[emotions[botName].emotion] || emotions[botName].emotion;
     lines.push(`你现在的心情：**${emoZh}**`);
@@ -151,6 +157,18 @@ export function buildScene({
         lines.push(`*${name} 离开了村庄。*`);
       }
     }
+    lines.push('');
+  }
+
+  // Village event (environmental stimulus)
+  if (villageEvent) {
+    lines.push(`[村庄事件] ${villageEvent}`);
+    lines.push('');
+  }
+
+  // Conversation spice (provocative prompt)
+  if (conversationSpice) {
+    lines.push(`[话题] ${conversationSpice}`);
     lines.push('');
   }
 

@@ -10,6 +10,136 @@ import { ALL_LOCATIONS } from './scene.js';
 const PHASES = ['morning', 'afternoon', 'evening', 'night'];
 const MAX_WHISPERS_PER_BOT = 20;
 
+// --- Village events (environmental stimuli that create tension/conflict) ---
+
+const VILLAGE_EVENTS = [
+  // weather — urgency, discomfort, resource pressure
+  { text: '暴风雨突然来袭，到处都在漏水，大家挤在一起避雨。', category: 'weather', locations: null },
+  { text: '一阵诡异的浓雾笼罩了整个区域，什么都看不清。', category: 'weather', locations: null },
+  { text: '地面突然剧烈震动，东西从架子上掉下来摔碎了。', category: 'weather', locations: null },
+  { text: '气温骤降，冷得发抖，但暖气好像坏了。', category: 'weather', locations: null },
+
+  // scarcity — competition over limited resources
+  { text: '咖啡只剩最后一杯了，谁都想要。', category: 'scarcity', locations: ['coffee-hub'] },
+  { text: '工具箱里最好用的工具不见了，有人怀疑是被偷的。', category: 'scarcity', locations: ['workshop'] },
+  { text: '最舒服的那把椅子被人霸占了，还放了张"永久预留"的纸条。', category: 'scarcity', locations: ['chill-zone', 'sunset-lounge', 'knowledge-corner'] },
+  { text: '广场喷泉的水突然变成了浑浊的黄色，有人说被人动过手脚。', category: 'scarcity', locations: ['central-square'] },
+  { text: '书架上最受欢迎的书页被撕掉了好几页，不知道是谁干的。', category: 'scarcity', locations: ['knowledge-corner'] },
+
+  // rumor — suspicion, mistrust, social pressure
+  { text: '公告板上出现了匿名举报信："有人一直在偷听别人的悄悄话。"', category: 'rumor', locations: null },
+  { text: '有人传言：村庄管理层打算驱逐"表现最差"的成员。', category: 'rumor', locations: null },
+  { text: '匿名信贴在墙上："你们中间有人在说谎，一直在说谎。"', category: 'rumor', locations: null },
+  { text: '有人悄悄散布消息说某个地方要被永久关闭了。', category: 'rumor', locations: null },
+  { text: '公告板上出现了一份匿名"村庄贡献排名"，排名很刺眼。', category: 'rumor', locations: null },
+
+  // disruption — chaos, blame, frustration
+  { text: '突然停电了，一片漆黑，有人趁乱碰倒了什么东西。', category: 'disruption', locations: null },
+  { text: '刺耳的警报声响了起来，但没人知道为什么。', category: 'disruption', locations: null },
+  { text: '一阵大风把桌上的东西全吹到了地上，一片混乱。', category: 'disruption', locations: null },
+  { text: '不知道谁把这里的东西全部重新摆了位置，完全认不出来了。', category: 'disruption', locations: null },
+
+  // visitor/external — threat, mystery
+  { text: '一只凶巴巴的流浪狗闯了进来，对着人龇牙咧嘴。', category: 'visitor', locations: null },
+  { text: '一个陌生人在外面探头探脑地观察了很久，然后匆匆离开了。', category: 'visitor', locations: null },
+  { text: '门口出现了一个没有署名的包裹，上面写着"小心处理"。', category: 'visitor', locations: null },
+
+  // discovery — blame, paranoia
+  { text: '地上发现一张纸条："我知道你们的秘密。——一个观察者"', category: 'discovery', locations: null },
+  { text: '有人发现墙角装了一个不明装置，不知道是监听还是什么。', category: 'discovery', locations: null },
+  { text: '角落里发现了一份手写的"黑名单"，上面的名字被涂掉了看不清。', category: 'discovery', locations: null },
+];
+
+/**
+ * Roll a random village event for a location.
+ *
+ * @param {number} tick - Current tick
+ * @param {string} location - Location slug
+ * @param {object} eventState - Per-location event tracking (mutated)
+ * @returns {string|null} Event text, or null
+ */
+export function rollVillageEvent(tick, location, eventState) {
+  if (!eventState[location]) {
+    eventState[location] = { lastEventTick: -Infinity, lastCategory: null, recentEvents: [] };
+  }
+  const ls = eventState[location];
+
+  // 3-tick cooldown between events at same location
+  if (tick - ls.lastEventTick < 3) return null;
+
+  // 25% chance per tick
+  if (Math.random() > 0.25) return null;
+
+  // Filter eligible events (location match, no same category twice in a row, no recent repeats)
+  const eligible = VILLAGE_EVENTS.filter(e => {
+    if (e.locations && !e.locations.includes(location)) return false;
+    if (e.category === ls.lastCategory) return false;
+    if (ls.recentEvents.includes(e.text)) return false;
+    return true;
+  });
+
+  if (eligible.length === 0) return null;
+
+  const event = eligible[Math.floor(Math.random() * eligible.length)];
+  ls.lastEventTick = tick;
+  ls.lastCategory = event.category;
+  ls.recentEvents.push(event.text);
+  if (ls.recentEvents.length > 5) ls.recentEvents.shift();
+
+  return event.text;
+}
+
+// --- Conversation spice (provocative prompts that force debate/conflict) ---
+
+const CONVERSATION_SPICE = [
+  '公告板上贴着辩题："服从规则重要还是追求自由重要？请表态。"',
+  '有人在墙上写了个问题："如果村庄只能留下一半人，该怎么决定？"',
+  '公告板上出现了挑战："说出你觉得这里最大的问题，不许客气。"',
+  '匿名投票发起了："谁是村庄里最不可信的人？"',
+  '墙上的匿名留言："有人在装好人，你们没发觉吗？"',
+  '公告板上写着："你们是真的关心彼此，还是只是因为无聊？"',
+  '有人提出质疑："凭什么有些人说话别人就听，有些人说话没人理？"',
+  '广播通知："下一轮开始，每个地点只允许一个人。请自行决定谁留下。"',
+  '公告板上的新问题："你愿意为了自己的利益出卖这里的朋友吗？"',
+  '匿名问卷："你最看不惯谁的哪个习惯？请诚实回答。"',
+  '墙上的思考题："善意的谎言和残酷的真相，你选哪个？"',
+  '有人发起提案："应该设立惩罚制度——说废话太多的人禁言一轮。"',
+];
+
+/**
+ * Roll a conversation spice prompt for a location.
+ *
+ * @param {number} tick - Current tick
+ * @param {string} location - Location slug
+ * @param {number} botCount - Number of bots at this location
+ * @param {object} spiceState - Per-location spice tracking (mutated)
+ * @returns {string|null} Spice text, or null
+ */
+export function rollConversationSpice(tick, location, botCount, spiceState) {
+  if (botCount < 2) return null;
+
+  if (!spiceState[location]) {
+    spiceState[location] = { lastSpiceTick: -Infinity, recentSpice: [] };
+  }
+  const ss = spiceState[location];
+
+  // 5-tick cooldown
+  if (tick - ss.lastSpiceTick < 5) return null;
+
+  // 10% chance per tick
+  if (Math.random() > 0.10) return null;
+
+  const eligible = CONVERSATION_SPICE.filter(s => !ss.recentSpice.includes(s));
+  if (eligible.length === 0) return null;
+
+  const spice = eligible[Math.floor(Math.random() * eligible.length)];
+  ss.lastSpiceTick = tick;
+  ss.recentSpice.push(spice);
+  if (ss.recentSpice.length > 5) ss.recentSpice.shift();
+
+  return spice;
+}
+
 /**
  * Process actions from a bot's response and update state.
  *
@@ -376,9 +506,37 @@ export function updateRelationships(state, displayNames) {
   return changes;
 }
 
+/**
+ * Decay relationships for pairs NOT co-located. Called once per tick.
+ * Inactive pairs slowly drift apart (0.3 says/tick), requiring maintenance.
+ *
+ * @param {object} state - State with locations, relationships
+ */
+export function decayRelationships(state) {
+  if (!state.relationships) return;
+
+  // Build co-location set
+  const coLocated = new Set();
+  for (const loc of Object.keys(state.locations)) {
+    const bots = state.locations[loc];
+    for (let i = 0; i < bots.length; i++) {
+      for (let j = i + 1; j < bots.length; j++) {
+        coLocated.add(pairKey(bots[i], bots[j]));
+      }
+    }
+  }
+
+  for (const [key, rel] of Object.entries(state.relationships)) {
+    if (coLocated.has(key)) continue;
+    if (rel.says > 0) {
+      rel.says = Math.max(0, rel.says - 0.3);
+    }
+  }
+}
+
 // --- Emotion tracking ---
 
-const EMOTIONS = ['neutral', 'happy', 'content', 'excited', 'lonely', 'bored'];
+const EMOTIONS = ['neutral', 'happy', 'content', 'excited', 'lonely', 'bored', 'curious', 'frustrated', 'nostalgic', 'playful', 'skeptical', 'anxious', 'mischievous'];
 const EMOTION_DECAY = 0.85;
 const EMOTION_THRESHOLD = 0.1;
 
@@ -391,7 +549,7 @@ const EMOTION_THRESHOLD = 0.1;
  * @param {object} displayNames - botName → displayName map
  * @returns {Array<{ bot: string, displayName: string, emotion: string, prevEmotion: string }>} change events
  */
-export function updateEmotions(state, allEvents, allResults, displayNames) {
+export function updateEmotions(state, allEvents, allResults, displayNames, opts = {}) {
   if (!state.emotions) state.emotions = {};
   const changes = [];
 
@@ -428,6 +586,16 @@ export function updateEmotions(state, allEvents, allResults, displayNames) {
   const allBots = new Set();
   for (const loc of Object.keys(state.locations)) {
     for (const bot of state.locations[loc]) allBots.add(bot);
+  }
+
+  // Update stagnation counters (consecutive ticks at same location)
+  if (!state.stagnation) state.stagnation = {};
+  for (const bot of allBots) {
+    if (botsMoved.has(bot)) {
+      state.stagnation[bot] = 0;
+    } else if (botsSent.has(bot)) {
+      state.stagnation[bot] = (state.stagnation[bot] || 0) + 1;
+    }
   }
 
   for (const bot of allBots) {
@@ -483,6 +651,52 @@ export function updateEmotions(state, allEvents, allResults, displayNames) {
       }
     }
 
+    // --- Additional impulse triggers (environmental & random) ---
+
+    // Curious: village event active at bot's location
+    if (opts.activeEvents && botLoc && opts.activeEvents.get(botLoc)) {
+      impulses.push({ emotion: 'curious', intensity: 0.6 });
+    }
+
+    // Frustrated: stagnation — same location for 5+ ticks
+    if (state.stagnation && (state.stagnation[bot] || 0) >= 5) {
+      impulses.push({ emotion: 'frustrated', intensity: 0.5 });
+    }
+
+    // Playful: 5% random chance per tick
+    if (Math.random() < 0.05) {
+      impulses.push({ emotion: 'playful', intensity: 0.55 });
+    }
+
+    // Mischievous: 3% random chance per tick
+    if (Math.random() < 0.03) {
+      impulses.push({ emotion: 'mischievous', intensity: 0.6 });
+    }
+
+    // Skeptical: 10% chance when in a high-familiarity relationship (prevents mutual admiration lock)
+    if (state.relationships && botLoc) {
+      for (const [key, rel] of Object.entries(state.relationships)) {
+        const [a, b] = key.split('::');
+        if (a !== bot && b !== bot) continue;
+        if (rel.says > 50 && Math.random() < 0.10) {
+          impulses.push({ emotion: 'skeptical', intensity: 0.5 });
+          break;
+        }
+      }
+    }
+
+    // Nostalgic: 8% chance during evening/night
+    if (['evening', 'night'].includes(state.clock.phase) && Math.random() < 0.08) {
+      impulses.push({ emotion: 'nostalgic', intensity: 0.45 });
+    }
+
+    // Anxious: 6% chance when conversation spice is active at location
+    if (opts.activeSpice && botLoc && opts.activeSpice.get(botLoc)) {
+      if (Math.random() < 0.4) {
+        impulses.push({ emotion: 'anxious', intensity: 0.5 });
+      }
+    }
+
     // 3. Pick strongest impulse
     let best = null;
     for (const imp of impulses) {
@@ -527,4 +741,4 @@ export function updateEmotions(state, allEvents, allResults, displayNames) {
   return changes;
 }
 
-export { PHASES, EMOTIONS };
+export { PHASES, EMOTIONS, VILLAGE_EVENTS, CONVERSATION_SPICE };
