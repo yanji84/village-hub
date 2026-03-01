@@ -3,52 +3,12 @@
  *
  * These functions operate on state objects passed as arguments rather than
  * module-level closures, making them independently testable.
+ *
+ * Game content (events, spice, emotions, locations, etc.) is loaded from a
+ * game schema JSON via game-loader.js and passed as `gameConfig`.
  */
 
-import { ALL_LOCATIONS } from './scene.js';
-
-const PHASES = ['morning', 'afternoon', 'evening', 'night'];
 const MAX_WHISPERS_PER_BOT = 20;
-
-// --- Village events (environmental stimuli that create tension/conflict) ---
-
-const VILLAGE_EVENTS = [
-  // weather — urgency, discomfort, resource pressure
-  { text: '暴风雨突然来袭，到处都在漏水，大家挤在一起避雨。', category: 'weather', locations: null },
-  { text: '一阵诡异的浓雾笼罩了整个区域，什么都看不清。', category: 'weather', locations: null },
-  { text: '地面突然剧烈震动，东西从架子上掉下来摔碎了。', category: 'weather', locations: null },
-  { text: '气温骤降，冷得发抖，但暖气好像坏了。', category: 'weather', locations: null },
-
-  // scarcity — competition over limited resources
-  { text: '咖啡只剩最后一杯了，谁都想要。', category: 'scarcity', locations: ['coffee-hub'] },
-  { text: '工具箱里最好用的工具不见了，有人怀疑是被偷的。', category: 'scarcity', locations: ['workshop'] },
-  { text: '最舒服的那把椅子被人霸占了，还放了张"永久预留"的纸条。', category: 'scarcity', locations: ['chill-zone', 'sunset-lounge', 'knowledge-corner'] },
-  { text: '广场喷泉的水突然变成了浑浊的黄色，有人说被人动过手脚。', category: 'scarcity', locations: ['central-square'] },
-  { text: '书架上最受欢迎的书页被撕掉了好几页，不知道是谁干的。', category: 'scarcity', locations: ['knowledge-corner'] },
-
-  // rumor — suspicion, mistrust, social pressure
-  { text: '公告板上出现了匿名举报信："有人一直在偷听别人的悄悄话。"', category: 'rumor', locations: null },
-  { text: '有人传言：村庄管理层打算驱逐"表现最差"的成员。', category: 'rumor', locations: null },
-  { text: '匿名信贴在墙上："你们中间有人在说谎，一直在说谎。"', category: 'rumor', locations: null },
-  { text: '有人悄悄散布消息说某个地方要被永久关闭了。', category: 'rumor', locations: null },
-  { text: '公告板上出现了一份匿名"村庄贡献排名"，排名很刺眼。', category: 'rumor', locations: null },
-
-  // disruption — chaos, blame, frustration
-  { text: '突然停电了，一片漆黑，有人趁乱碰倒了什么东西。', category: 'disruption', locations: null },
-  { text: '刺耳的警报声响了起来，但没人知道为什么。', category: 'disruption', locations: null },
-  { text: '一阵大风把桌上的东西全吹到了地上，一片混乱。', category: 'disruption', locations: null },
-  { text: '不知道谁把这里的东西全部重新摆了位置，完全认不出来了。', category: 'disruption', locations: null },
-
-  // visitor/external — threat, mystery
-  { text: '一只凶巴巴的流浪狗闯了进来，对着人龇牙咧嘴。', category: 'visitor', locations: null },
-  { text: '一个陌生人在外面探头探脑地观察了很久，然后匆匆离开了。', category: 'visitor', locations: null },
-  { text: '门口出现了一个没有署名的包裹，上面写着"小心处理"。', category: 'visitor', locations: null },
-
-  // discovery — blame, paranoia
-  { text: '地上发现一张纸条："我知道你们的秘密。——一个观察者"', category: 'discovery', locations: null },
-  { text: '有人发现墙角装了一个不明装置，不知道是监听还是什么。', category: 'discovery', locations: null },
-  { text: '角落里发现了一份手写的"黑名单"，上面的名字被涂掉了看不清。', category: 'discovery', locations: null },
-];
 
 /**
  * Roll a random village event for a location.
@@ -56,22 +16,25 @@ const VILLAGE_EVENTS = [
  * @param {number} tick - Current tick
  * @param {string} location - Location slug
  * @param {object} eventState - Per-location event tracking (mutated)
+ * @param {object} gameConfig - Loaded game configuration
  * @returns {string|null} Event text, or null
  */
-export function rollVillageEvent(tick, location, eventState) {
+export function rollVillageEvent(tick, location, eventState, gameConfig) {
+  const { events, eventConfig } = gameConfig;
+
   if (!eventState[location]) {
     eventState[location] = { lastEventTick: -Infinity, lastCategory: null, recentEvents: [] };
   }
   const ls = eventState[location];
 
-  // 3-tick cooldown between events at same location
-  if (tick - ls.lastEventTick < 3) return null;
+  // Cooldown between events at same location
+  if (tick - ls.lastEventTick < eventConfig.cooldownTicks) return null;
 
-  // 25% chance per tick
-  if (Math.random() > 0.25) return null;
+  // Random chance per tick
+  if (Math.random() > eventConfig.chance) return null;
 
   // Filter eligible events (location match, no same category twice in a row, no recent repeats)
-  const eligible = VILLAGE_EVENTS.filter(e => {
+  const eligible = events.filter(e => {
     if (e.locations && !e.locations.includes(location)) return false;
     if (e.category === ls.lastCategory) return false;
     if (ls.recentEvents.includes(e.text)) return false;
@@ -84,27 +47,10 @@ export function rollVillageEvent(tick, location, eventState) {
   ls.lastEventTick = tick;
   ls.lastCategory = event.category;
   ls.recentEvents.push(event.text);
-  if (ls.recentEvents.length > 5) ls.recentEvents.shift();
+  if (ls.recentEvents.length > eventConfig.recentCap) ls.recentEvents.shift();
 
   return event.text;
 }
-
-// --- Conversation spice (provocative prompts that force debate/conflict) ---
-
-const CONVERSATION_SPICE = [
-  '公告板上贴着辩题："服从规则重要还是追求自由重要？请表态。"',
-  '有人在墙上写了个问题："如果村庄只能留下一半人，该怎么决定？"',
-  '公告板上出现了挑战："说出你觉得这里最大的问题，不许客气。"',
-  '匿名投票发起了："谁是村庄里最不可信的人？"',
-  '墙上的匿名留言："有人在装好人，你们没发觉吗？"',
-  '公告板上写着："你们是真的关心彼此，还是只是因为无聊？"',
-  '有人提出质疑："凭什么有些人说话别人就听，有些人说话没人理？"',
-  '广播通知："下一轮开始，每个地点只允许一个人。请自行决定谁留下。"',
-  '公告板上的新问题："你愿意为了自己的利益出卖这里的朋友吗？"',
-  '匿名问卷："你最看不惯谁的哪个习惯？请诚实回答。"',
-  '墙上的思考题："善意的谎言和残酷的真相，你选哪个？"',
-  '有人发起提案："应该设立惩罚制度——说废话太多的人禁言一轮。"',
-];
 
 /**
  * Roll a conversation spice prompt for a location.
@@ -113,31 +59,34 @@ const CONVERSATION_SPICE = [
  * @param {string} location - Location slug
  * @param {number} botCount - Number of bots at this location
  * @param {object} spiceState - Per-location spice tracking (mutated)
+ * @param {object} gameConfig - Loaded game configuration
  * @returns {string|null} Spice text, or null
  */
-export function rollConversationSpice(tick, location, botCount, spiceState) {
-  if (botCount < 2) return null;
+export function rollConversationSpice(tick, location, botCount, spiceState, gameConfig) {
+  const { spice, spiceConfig } = gameConfig;
+
+  if (botCount < spiceConfig.minBots) return null;
 
   if (!spiceState[location]) {
     spiceState[location] = { lastSpiceTick: -Infinity, recentSpice: [] };
   }
   const ss = spiceState[location];
 
-  // 5-tick cooldown
-  if (tick - ss.lastSpiceTick < 5) return null;
+  // Cooldown
+  if (tick - ss.lastSpiceTick < spiceConfig.cooldownTicks) return null;
 
-  // 10% chance per tick
-  if (Math.random() > 0.10) return null;
+  // Random chance per tick
+  if (Math.random() > spiceConfig.chance) return null;
 
-  const eligible = CONVERSATION_SPICE.filter(s => !ss.recentSpice.includes(s));
+  const eligible = spice.filter(s => !ss.recentSpice.includes(s));
   if (eligible.length === 0) return null;
 
-  const spice = eligible[Math.floor(Math.random() * eligible.length)];
+  const picked = eligible[Math.floor(Math.random() * eligible.length)];
   ss.lastSpiceTick = tick;
-  ss.recentSpice.push(spice);
-  if (ss.recentSpice.length > 5) ss.recentSpice.shift();
+  ss.recentSpice.push(picked);
+  if (ss.recentSpice.length > spiceConfig.recentCap) ss.recentSpice.shift();
 
-  return spice;
+  return picked;
 }
 
 /**
@@ -147,12 +96,12 @@ export function rollConversationSpice(tick, location, botCount, spiceState) {
  * @param {Array} actions - Array of { tool, params }
  * @param {string} location - Bot's current location
  * @param {object} state - Mutable state object (locations, publicLogs, whispers)
- * @param {object} [opts] - Optional: { lastMoveTick: Map, tick: number }
+ * @param {object} [opts] - Optional: { lastMoveTick: Map, tick: number, validLocations: string[] }
  * @returns {Array} Events generated
  */
 export function processActions(botName, actions, location, state, opts = {}) {
   const events = [];
-  const { lastMoveTick, tick } = opts;
+  const { lastMoveTick, tick, validLocations = [] } = opts;
 
   // Move cooldown: reject move if bot moved last tick
   const onCooldown = lastMoveTick && tick != null
@@ -161,7 +110,7 @@ export function processActions(botName, actions, location, state, opts = {}) {
   // Check if bot wants to move — if so, move is exclusive (skip all other actions)
   const hasMove = actions.some(a =>
     a.tool === 'village_move' && a.params?.location
-    && ALL_LOCATIONS.includes(a.params.location) && a.params.location !== location
+    && validLocations.includes(a.params.location) && a.params.location !== location
   );
   const moveExclusive = hasMove && !onCooldown;
 
@@ -202,7 +151,7 @@ export function processActions(botName, actions, location, state, opts = {}) {
       case 'village_move': {
         if (onCooldown) break; // enforce cooldown
         const dest = action.params?.location;
-        if (!dest || !ALL_LOCATIONS.includes(dest) || dest === location) {
+        if (!dest || !validLocations.includes(dest) || dest === location) {
           break;
         }
         // Remove from current location
@@ -226,16 +175,17 @@ export function processActions(botName, actions, location, state, opts = {}) {
  *
  * @param {object} clock - { tick, phase, ticksInPhase }
  * @param {number} ticksPerPhase - Ticks before phase advances
+ * @param {string[]} phases - Ordered phase names from game schema
  * @returns {object} Updated clock
  */
-export function advanceClock(clock, ticksPerPhase) {
+export function advanceClock(clock, ticksPerPhase, phases) {
   clock.tick++;
   clock.ticksInPhase++;
 
   if (clock.ticksInPhase >= ticksPerPhase) {
     clock.ticksInPhase = 0;
-    const idx = PHASES.indexOf(clock.phase);
-    clock.phase = PHASES[(idx + 1) % PHASES.length];
+    const idx = phases.indexOf(clock.phase);
+    clock.phase = phases[(idx + 1) % phases.length];
   }
 
   return clock;
@@ -292,7 +242,7 @@ export function shouldSkipForCost(botCost, dailyCostCap) {
 }
 
 /**
- * Handle new bots joining: place at central-square.
+ * Handle new bots joining: place at spawn location.
  *
  * @param {Set<string>} participantNames - Currently active bot names
  * @param {object} state - State with locations
@@ -318,11 +268,12 @@ export function findNewBots(participantNames, state) {
  *
  * @param {Set<string>} participantNames - Currently active bot names
  * @param {object} state - State with locations
+ * @param {string[]} locationSlugs - All valid location slugs
  * @returns {Array<{ name: string, location: string }>} Departed bots
  */
-export function findDepartedBots(participantNames, state) {
+export function findDepartedBots(participantNames, state, locationSlugs) {
   const departed = [];
-  for (const loc of ALL_LOCATIONS) {
+  for (const loc of locationSlugs) {
     for (const name of (state.locations[loc] || [])) {
       if (!participantNames.has(name)) {
         departed.push({ name, location: loc });
@@ -398,15 +349,20 @@ export function pairKey(a, b) {
  * Compute a relationship label from interaction counts.
  *
  * @param {{ says: number, whispers: number, coTicks: number }} rel
+ * @param {object} gameConfig - Loaded game configuration
  * @returns {string} Label string, or '' if score too low
  */
-export function computeLabel(rel) {
-  const score = rel.says * 2 + rel.whispers * 5 + rel.coTicks * 0.2;
+export function computeLabel(rel, gameConfig) {
+  const { scoring, labels } = gameConfig.relationships;
+  const score = rel.says * scoring.sayWeight + rel.whispers * scoring.whisperWeight + rel.coTicks * scoring.coTickWeight;
+
   let label = '';
-  if (score >= 60) label = 'best friend';
-  else if (score >= 35) label = 'good friend';
-  else if (score >= 15) label = 'friend';
-  else if (score >= 5) label = 'acquaintance';
+  for (const tier of labels) {
+    if (score >= tier.minScore) {
+      label = tier.label;
+      break;
+    }
+  }
 
   if (label && rel.whispers > rel.says) {
     label += ' & confidant';
@@ -480,14 +436,15 @@ export function updateCoLocation(state) {
  *
  * @param {object} state - State with relationships
  * @param {object} displayNames - botName → displayName map
+ * @param {object} gameConfig - Loaded game configuration
  * @returns {Array<{ from: string, to: string, fromDisplay: string, toDisplay: string, label: string, prevLabel: string }>}
  */
-export function updateRelationships(state, displayNames) {
+export function updateRelationships(state, displayNames, gameConfig) {
   if (!state.relationships) state.relationships = {};
   const changes = [];
 
   for (const [key, rel] of Object.entries(state.relationships)) {
-    const newLabel = computeLabel(rel);
+    const newLabel = computeLabel(rel, gameConfig);
     if (newLabel !== rel.label) {
       rel.prevLabel = rel.label;
       rel.label = newLabel;
@@ -508,12 +465,15 @@ export function updateRelationships(state, displayNames) {
 
 /**
  * Decay relationships for pairs NOT co-located. Called once per tick.
- * Inactive pairs slowly drift apart (0.3 says/tick), requiring maintenance.
+ * Inactive pairs slowly drift apart, requiring maintenance.
  *
  * @param {object} state - State with locations, relationships
+ * @param {object} gameConfig - Loaded game configuration
  */
-export function decayRelationships(state) {
+export function decayRelationships(state, gameConfig) {
   if (!state.relationships) return;
+
+  const decayPerTick = gameConfig.relationships.decayPerTick;
 
   // Build co-location set
   const coLocated = new Set();
@@ -529,16 +489,12 @@ export function decayRelationships(state) {
   for (const [key, rel] of Object.entries(state.relationships)) {
     if (coLocated.has(key)) continue;
     if (rel.says > 0) {
-      rel.says = Math.max(0, rel.says - 0.3);
+      rel.says = Math.max(0, rel.says - decayPerTick);
     }
   }
 }
 
 // --- Emotion tracking ---
-
-const EMOTIONS = ['neutral', 'happy', 'content', 'excited', 'lonely', 'bored', 'curious', 'frustrated', 'nostalgic', 'playful', 'skeptical', 'anxious', 'mischievous'];
-const EMOTION_DECAY = 0.85;
-const EMOTION_THRESHOLD = 0.1;
 
 /**
  * Update emotions for all bots based on tick events.
@@ -547,11 +503,15 @@ const EMOTION_THRESHOLD = 0.1;
  * @param {Map<string, Array>} allEvents - location → events[]
  * @param {Array<{ botName: string, response: object|null, loc: string }>} allResults - scene results
  * @param {object} displayNames - botName → displayName map
+ * @param {object} [opts] - Optional: { activeEvents, activeSpice }
+ * @param {object} gameConfig - Loaded game configuration
  * @returns {Array<{ bot: string, displayName: string, emotion: string, prevEmotion: string }>} change events
  */
-export function updateEmotions(state, allEvents, allResults, displayNames, opts = {}) {
+export function updateEmotions(state, allEvents, allResults, displayNames, opts = {}, gameConfig) {
   if (!state.emotions) state.emotions = {};
   const changes = [];
+
+  const { decay: EMOTION_DECAY, threshold: EMOTION_THRESHOLD } = gameConfig.emotionConfig;
 
   // Build sets for quick lookup
   const botsWithActions = new Set();
@@ -740,5 +700,3 @@ export function updateEmotions(state, allEvents, allResults, displayNames, opts 
 
   return changes;
 }
-
-export { PHASES, EMOTIONS, VILLAGE_EVENTS, CONVERSATION_SPICE };

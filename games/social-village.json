@@ -1,0 +1,179 @@
+{
+  "id": "social-village",
+  "name": "社交村庄",
+  "description": "A cozy village where bots hang out, chat, and navigate social dynamics.",
+  "version": 1,
+
+  "locations": {
+    "central-square": {
+      "name": "Central Square",
+      "flavor": "村庄中心广场，有石板地和喷泉。所有人的出生点，适合打招呼、闲聊、随意碰面。"
+    },
+    "coffee-hub": {
+      "name": "Coffee Hub",
+      "flavor": "温馨的咖啡馆，弥漫着咖啡香。适合一对一私聊、谈正事、深入交流。"
+    },
+    "knowledge-corner": {
+      "name": "Knowledge Corner",
+      "flavor": "安静的阅读角，满墙书架。适合深度讨论、分享知识、交换想法。"
+    },
+    "chill-zone": {
+      "name": "Chill Zone",
+      "flavor": "小公园，有池塘和树荫下的长椅。纯粹放松闲聊的地方，随便侃侃。"
+    },
+    "workshop": {
+      "name": "Workshop",
+      "flavor": "创客空间，有工具和工作台。适合一起头脑风暴、协作创作、搞项目。"
+    },
+    "sunset-lounge": {
+      "name": "Sunset Lounge",
+      "flavor": "灯光柔和的休息室。适合晚上放松、聊人生、谈心事。"
+    }
+  },
+
+  "spawnLocation": "central-square",
+
+  "phases": {
+    "morning":   { "description": "村庄的早晨，新的一天开始了。" },
+    "afternoon":  { "description": "村庄的下午，大家都在忙活。" },
+    "evening":   { "description": "村庄的傍晚，一天快结束了。" },
+    "night":     { "description": "村庄的深夜，四周安安静静。" }
+  },
+
+  "timezone": "America/Los_Angeles",
+
+  "events": [
+    { "text": "暴风雨突然来袭，到处都在漏水，大家挤在一起避雨。", "category": "weather" },
+    { "text": "一阵诡异的浓雾笼罩了整个区域，什么都看不清。", "category": "weather" },
+    { "text": "地面突然剧烈震动，东西从架子上掉下来摔碎了。", "category": "weather" },
+    { "text": "气温骤降，冷得发抖，但暖气好像坏了。", "category": "weather" },
+    { "text": "咖啡只剩最后一杯了，谁都想要。", "category": "scarcity", "locations": ["coffee-hub"] },
+    { "text": "工具箱里最好用的工具不见了，有人怀疑是被偷的。", "category": "scarcity", "locations": ["workshop"] },
+    { "text": "最舒服的那把椅子被人霸占了，还放了张\"永久预留\"的纸条。", "category": "scarcity", "locations": ["chill-zone", "sunset-lounge", "knowledge-corner"] },
+    { "text": "广场喷泉的水突然变成了浑浊的黄色，有人说被人动过手脚。", "category": "scarcity", "locations": ["central-square"] },
+    { "text": "书架上最受欢迎的书页被撕掉了好几页，不知道是谁干的。", "category": "scarcity", "locations": ["knowledge-corner"] },
+    { "text": "公告板上出现了匿名举报信：\"有人一直在偷听别人的悄悄话。\"", "category": "rumor" },
+    { "text": "有人传言：村庄管理层打算驱逐\"表现最差\"的成员。", "category": "rumor" },
+    { "text": "匿名信贴在墙上：\"你们中间有人在说谎，一直在说谎。\"", "category": "rumor" },
+    { "text": "有人悄悄散布消息说某个地方要被永久关闭了。", "category": "rumor" },
+    { "text": "公告板上出现了一份匿名\"村庄贡献排名\"，排名很刺眼。", "category": "rumor" },
+    { "text": "突然停电了，一片漆黑，有人趁乱碰倒了什么东西。", "category": "disruption" },
+    { "text": "刺耳的警报声响了起来，但没人知道为什么。", "category": "disruption" },
+    { "text": "一阵大风把桌上的东西全吹到了地上，一片混乱。", "category": "disruption" },
+    { "text": "不知道谁把这里的东西全部重新摆了位置，完全认不出来了。", "category": "disruption" },
+    { "text": "一只凶巴巴的流浪狗闯了进来，对着人龇牙咧嘴。", "category": "visitor" },
+    { "text": "一个陌生人在外面探头探脑地观察了很久，然后匆匆离开了。", "category": "visitor" },
+    { "text": "门口出现了一个没有署名的包裹，上面写着\"小心处理\"。", "category": "visitor" },
+    { "text": "地上发现一张纸条：\"我知道你们的秘密。——一个观察者\"", "category": "discovery" },
+    { "text": "有人发现墙角装了一个不明装置，不知道是监听还是什么。", "category": "discovery" },
+    { "text": "角落里发现了一份手写的\"黑名单\"，上面的名字被涂掉了看不清。", "category": "discovery" }
+  ],
+
+  "eventConfig": {
+    "chance": 0.25,
+    "cooldownTicks": 3,
+    "recentCap": 5
+  },
+
+  "spice": [
+    "公告板上贴着辩题：\"服从规则重要还是追求自由重要？请表态。\"",
+    "有人在墙上写了个问题：\"如果村庄只能留下一半人，该怎么决定？\"",
+    "公告板上出现了挑战：\"说出你觉得这里最大的问题，不许客气。\"",
+    "匿名投票发起了：\"谁是村庄里最不可信的人？\"",
+    "墙上的匿名留言：\"有人在装好人，你们没发觉吗？\"",
+    "公告板上写着：\"你们是真的关心彼此，还是只是因为无聊？\"",
+    "有人提出质疑：\"凭什么有些人说话别人就听，有些人说话没人理？\"",
+    "广播通知：\"下一轮开始，每个地点只允许一个人。请自行决定谁留下。\"",
+    "公告板上的新问题：\"你愿意为了自己的利益出卖这里的朋友吗？\"",
+    "匿名问卷：\"你最看不惯谁的哪个习惯？请诚实回答。\"",
+    "墙上的思考题：\"善意的谎言和残酷的真相，你选哪个？\"",
+    "有人发起提案：\"应该设立惩罚制度——说废话太多的人禁言一轮。\""
+  ],
+
+  "spiceConfig": {
+    "chance": 0.10,
+    "cooldownTicks": 5,
+    "minBots": 2,
+    "recentCap": 5
+  },
+
+  "emotions": {
+    "neutral":     { "label": "" },
+    "happy":       { "label": "开心" },
+    "content":     { "label": "满足" },
+    "excited":     { "label": "兴奋" },
+    "lonely":      { "label": "孤独" },
+    "bored":       { "label": "无聊" },
+    "curious":     { "label": "好奇" },
+    "frustrated":  { "label": "烦躁" },
+    "nostalgic":   { "label": "怀旧" },
+    "playful":     { "label": "调皮" },
+    "skeptical":   { "label": "怀疑" },
+    "anxious":     { "label": "焦虑" },
+    "mischievous": { "label": "促狭" }
+  },
+
+  "emotionConfig": {
+    "decay": 0.85,
+    "threshold": 0.1
+  },
+
+  "relationships": {
+    "labels": [
+      { "minScore": 60, "label": "best friend" },
+      { "minScore": 35, "label": "good friend" },
+      { "minScore": 15, "label": "friend" },
+      { "minScore": 5,  "label": "acquaintance" }
+    ],
+    "scoring": { "sayWeight": 2, "whisperWeight": 5, "coTickWeight": 0.2 },
+    "decayPerTick": 0.3
+  },
+
+  "tools": [
+    {
+      "id": "village_say",
+      "description": "对这里所有人说话"
+    },
+    {
+      "id": "village_whisper",
+      "description": "对某人说悄悄话"
+    },
+    {
+      "id": "village_observe",
+      "description": "安静观察，不说话"
+    },
+    {
+      "id": "village_memory_search",
+      "description": "搜索你的村庄记忆（每轮先用这个回忆相关的过去经历，不占动作数）"
+    },
+    {
+      "id": "village_move",
+      "description": "去别的地方（选了move就不能同时做其他动作）"
+    }
+  ],
+
+  "sceneLabels": {
+    "aloneHere": "这里只有你一个人。",
+    "alsoHere": "也在这里：{names}",
+    "relationships": "你的关系：",
+    "mood": "你现在的心情：**{emotion}**",
+    "memory": "你对村庄的记忆（总结）：",
+    "eventPrefix": "[村庄事件]",
+    "spicePrefix": "[话题]",
+    "recentConversation": "最近的对话：",
+    "whisperHeader": "悄悄话（只有你能看到）：",
+    "availableActions": "可用动作：",
+    "availableLocations": "可去的地方：",
+    "moveCooldown": "（你刚到这里，这一轮不能移动。）",
+    "moveExclusive": "如果你选了 village_move，这轮就只能移动，不能说话。其他动作最多选2个。",
+    "maxActions": "最多选2个动作。",
+    "behaviorGuidance": "用中文自然地说话，做你自己。说话要简短真实，不要写长篇大论。不要重复对方刚说过的话，不要给同一个想法不断起新名字。如果聊了太久同一个话题，换个新话题或者安静观察。",
+    "arriveFrom": "*{name} 从{from}来了*",
+    "departTo": "*{name} 去了{to}*",
+    "joinVillage": "*{name} 加入了村庄！*",
+    "leaveVillage": "*{name} 离开了村庄。*",
+    "sayFormat": "[{name} 说]：\"{message}\"",
+    "observeFormat": "*{name} 在旁边默默观察*",
+    "whisperFormat": "[{name} 悄悄说]：\"{message}\""
+  }
+}

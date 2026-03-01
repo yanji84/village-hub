@@ -6,6 +6,9 @@
  * and serves an observer web UI via SSE.
  *
  * Uses Node.js built-ins only. Imports CJS lib/ modules via createRequire.
+ *
+ * Game content is loaded from a JSON schema file via game-loader.js.
+ * Set VILLAGE_GAME env var to select a game (default: social-village).
  */
 
 import { createServer } from 'node:http';
@@ -15,7 +18,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { buildScene, LOCATION_NAMES, ALL_LOCATIONS, getVillageTime } from './scene.js';
+import { loadGame } from './game-loader.js';
+import { buildScene, getVillageTime } from './scene.js';
 import { appendVillageMemory, buildMemoryEntry } from './memory.js';
 import { needsSummarization, summarizeVillageMemory } from './summarize.js';
 import {
@@ -44,6 +48,11 @@ const villageManager = require('../lib/village-manager');
 const configManager = require('../lib/config-manager');
 const identityManager = require('../lib/identity-manager');
 
+// --- Load game schema ---
+const VILLAGE_GAME = process.env.VILLAGE_GAME || 'social-village';
+const gameConfig = loadGame(join(__dirname, 'games', VILLAGE_GAME + '.json'));
+console.log(`[village] Loaded game: ${gameConfig.raw.id} (${gameConfig.raw.name})`);
+
 // --- Config ---
 const PORT = parseInt(process.env.VILLAGE_PORT || '7001', 10);
 const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || '120000', 10); // 2 minutes
@@ -63,8 +72,6 @@ const LOGS_DIR = join(__dirname, 'logs');
 // --- Event log file (JSONL, one file per day) ---
 let logDate = '';   // 'YYYY-MM-DD'
 let logFile = '';   // full path to current day's .jsonl
-
-// PHASES imported from logic.js via advanceClockImpl
 
 // --- State ---
 let state = {
@@ -110,7 +117,7 @@ async function loadState() {
       spiceState: loaded.spiceState || {},
       stagnation: loaded.stagnation || {},
     };
-    for (const loc of ALL_LOCATIONS) {
+    for (const loc of gameConfig.locationSlugs) {
       if (!state.locations[loc]) state.locations[loc] = [];
       if (!state.publicLogs[loc]) state.publicLogs[loc] = [];
       if (!state.emptyTicks[loc]) state.emptyTicks[loc] = 0;
@@ -134,7 +141,7 @@ async function loadState() {
   } catch { /* backup also failed */ }
 
   // Initialize fresh state
-  for (const loc of ALL_LOCATIONS) {
+  for (const loc of gameConfig.locationSlugs) {
     state.locations[loc] = [];
     state.publicLogs[loc] = [];
     state.emptyTicks[loc] = 0;
@@ -201,7 +208,7 @@ function removeBot(botName, reason) {
   failureCounts.delete(botName);
 
   // Remove from all locations
-  for (const loc of ALL_LOCATIONS) {
+  for (const loc of gameConfig.locationSlugs) {
     const idx = state.locations[loc].indexOf(botName);
     if (idx !== -1) {
       state.locations[loc].splice(idx, 1);
@@ -227,7 +234,7 @@ function removeBot(botName, reason) {
 async function recoverParticipants() {
   // Collect all bot names currently in any location
   const botsInState = new Set();
-  for (const loc of ALL_LOCATIONS) {
+  for (const loc of gameConfig.locationSlugs) {
     for (const name of state.locations[loc]) botsInState.add(name);
   }
 
@@ -353,7 +360,7 @@ function broadcastEvent(event) {
 // --- Advance clock (delegated to logic.js) ---
 
 function advanceClock() {
-  advanceClockImpl(state.clock, TICKS_PER_PHASE);
+  advanceClockImpl(state.clock, TICKS_PER_PHASE, gameConfig.phases);
 }
 
 // --- Main tick ---
@@ -367,7 +374,7 @@ async function tick() {
   try {
     advanceClock();
     const tickNum = state.clock.tick;
-    const vt = getVillageTime();
+    const vt = getVillageTime(gameConfig.timezone);
     const phase = vt.phase;
     state.clock.phase = phase;
 
@@ -416,27 +423,27 @@ async function tick() {
     // Roll village events and conversation spice for occupied locations
     const activeEvents = new Map();  // location → event text
     const activeSpice = new Map();   // location → spice text
-    for (const loc of ALL_LOCATIONS) {
+    for (const loc of gameConfig.locationSlugs) {
       const botsAtLoc = state.locations[loc];
       if (botsAtLoc.length === 0) continue;
-      const event = rollVillageEvent(tickNum, loc, state.eventState);
+      const event = rollVillageEvent(tickNum, loc, state.eventState, gameConfig);
       if (event) {
         activeEvents.set(loc, event);
         console.log(`[village] event at ${loc}: ${event}`);
-        broadcastEvent({ type: 'village_event', tick: tickNum, location: loc, locationName: LOCATION_NAMES[loc], text: event });
+        broadcastEvent({ type: 'village_event', tick: tickNum, location: loc, locationName: gameConfig.locationNames[loc], text: event });
       }
-      const spice = rollConversationSpice(tickNum, loc, botsAtLoc.length, state.spiceState);
+      const spice = rollConversationSpice(tickNum, loc, botsAtLoc.length, state.spiceState, gameConfig);
       if (spice) {
         activeSpice.set(loc, spice);
         console.log(`[village] spice at ${loc}: ${spice}`);
-        broadcastEvent({ type: 'conversation_spice', tick: tickNum, location: loc, locationName: LOCATION_NAMES[loc], text: spice });
+        broadcastEvent({ type: 'conversation_spice', tick: tickNum, location: loc, locationName: gameConfig.locationNames[loc], text: spice });
       }
     }
 
     // Build all scene requests across all locations from a single snapshot
     const allSceneRequests = [];
 
-    for (const loc of ALL_LOCATIONS) {
+    for (const loc of gameConfig.locationSlugs) {
       const botsAtLoc = [...state.locations[loc]];
       allEvents.set(loc, []);
 
@@ -488,6 +495,7 @@ async function tick() {
           villageMemory: villageSummaries.get(botName) || '',
           villageEvent: activeEvents.get(loc) || '',
           conversationSpice: activeSpice.get(loc) || '',
+          gameConfig,
         });
 
         allSceneRequests.push({ botName, port, conversationId, scene, loc });
@@ -518,7 +526,9 @@ async function tick() {
       }
 
       botsResponded++;
-      const events = processActions(botName, response.actions, loc, state, { lastMoveTick, tick: tickNum });
+      const events = processActions(botName, response.actions, loc, state, {
+        lastMoveTick, tick: tickNum, validLocations: gameConfig.locationSlugs,
+      });
       allEvents.get(loc).push(...events);
 
       for (const ev of events) {
@@ -533,7 +543,7 @@ async function tick() {
           tick: tickNum,
           phase,
           location: loc,
-          locationName: LOCATION_NAMES[loc],
+          locationName: gameConfig.locationNames[loc],
           bot: botName,
           displayName: displayNames[botName],
           ...ev,
@@ -545,7 +555,7 @@ async function tick() {
     // Track relationships
     trackInteractions(allEvents, state, displayNames);
     updateCoLocation(state);
-    const relChanges = updateRelationships(state, displayNames);
+    const relChanges = updateRelationships(state, displayNames, gameConfig);
     for (const change of relChanges) {
       broadcastEvent({
         type: 'relationship',
@@ -561,10 +571,10 @@ async function tick() {
     }
 
     // Decay relationships for non-co-located pairs
-    decayRelationships(state);
+    decayRelationships(state, gameConfig);
 
     // Track emotions (pass active events/spice for impulse triggers)
-    const emotionChanges = updateEmotions(state, allEvents, allResults, displayNames, { activeEvents, activeSpice });
+    const emotionChanges = updateEmotions(state, allEvents, allResults, displayNames, { activeEvents, activeSpice }, gameConfig);
     for (const change of emotionChanges) {
       broadcastEvent({
         type: 'emotion',
@@ -588,7 +598,7 @@ async function tick() {
         if (!participants.has(botName)) continue;
         try {
           const entry = buildMemoryEntry({
-            location: LOCATION_NAMES[loc] || loc,
+            location: gameConfig.locationNames[loc] || loc,
             timestamp,
             events,
             botName,
@@ -613,7 +623,7 @@ async function tick() {
     await saveState();
 
     // Conversation quality metrics (observability only — see ggbot.md 2A)
-    for (const loc of ALL_LOCATIONS) {
+    for (const loc of gameConfig.locationSlugs) {
       const metrics = computeQualityMetrics(state.publicLogs[loc]);
       if (!metrics) continue;
       console.log(
@@ -645,7 +655,7 @@ async function tick() {
       nextTickAt,
       tickIntervalMs: TICK_INTERVAL_MS,
       locations: Object.fromEntries(
-        ALL_LOCATIONS.map(l => [l, state.locations[l].map(b => ({
+        gameConfig.locationSlugs.map(l => [l, state.locations[l].map(b => ({
           name: b, displayName: displayNames[b] || b,
         }))])
       ),
@@ -689,6 +699,7 @@ const server = createServer(async (req, res) => {
       activeBots: participants.size,
       lastTickAt: new Date().toISOString(),
       uptime: Math.round((Date.now() - startTime) / 1000),
+      game: gameConfig.raw.id,
     }));
     return;
   }
@@ -741,15 +752,15 @@ const server = createServer(async (req, res) => {
     participants.set(botName, { port, displayName: name });
     failureCounts.delete(botName);
 
-    // Place at central-square if not already in any location
-    const alreadyInLocation = ALL_LOCATIONS.some(loc => state.locations[loc].includes(botName));
+    // Place at spawn location if not already in any location
+    const alreadyInLocation = gameConfig.locationSlugs.some(loc => state.locations[loc].includes(botName));
     if (!alreadyInLocation) {
-      state.locations['central-square'].push(botName);
+      state.locations[gameConfig.spawnLocation].push(botName);
       broadcastEvent({
         type: 'movement', bot: botName, displayName: name,
-        action: 'join', location: 'central-square', tick: state.clock.tick,
+        action: 'join', location: gameConfig.spawnLocation, tick: state.clock.tick,
       });
-      state.publicLogs['central-square'].push({
+      state.publicLogs[gameConfig.spawnLocation].push({
         bot: botName, action: 'say',
         message: `*${name} has joined the village!*`,
       });
@@ -759,7 +770,15 @@ const server = createServer(async (req, res) => {
     console.log(`[village] ${botName} joined (port ${port}, display: ${name})`);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify({
+      ok: true,
+      game: {
+        id: gameConfig.raw.id,
+        name: gameConfig.raw.name,
+        description: gameConfig.raw.description,
+        version: gameConfig.raw.version,
+      },
+    }));
     return;
   }
 
@@ -818,7 +837,7 @@ const server = createServer(async (req, res) => {
     observers.add(observer);
 
     // Send initial state
-    const initVt = getVillageTime();
+    const initVt = getVillageTime(gameConfig.timezone);
     const initData = JSON.stringify({
       type: 'init',
       tick: state.clock.tick,
@@ -827,15 +846,21 @@ const server = createServer(async (req, res) => {
       paused,
       nextTickAt,
       tickIntervalMs: TICK_INTERVAL_MS,
+      game: {
+        id: gameConfig.raw.id,
+        name: gameConfig.raw.name,
+        description: gameConfig.raw.description,
+        version: gameConfig.raw.version,
+      },
       locations: Object.fromEntries(
-        ALL_LOCATIONS.map(l => [l, (state.locations[l] || []).map(b => ({
+        gameConfig.locationSlugs.map(l => [l, (state.locations[l] || []).map(b => ({
           name: b, displayName: participants.get(b)?.displayName || b,
         }))])
       ),
       relationships: state.relationships,
       emotions: state.emotions,
       publicLogs: Object.fromEntries(
-        ALL_LOCATIONS.filter(l => (state.publicLogs[l] || []).length > 0)
+        gameConfig.locationSlugs.filter(l => (state.publicLogs[l] || []).length > 0)
           .map(l => [l, state.publicLogs[l].map(e => ({
             ...e,
             displayName: participants.get(e.bot)?.displayName || e.bot,
