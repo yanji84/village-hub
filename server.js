@@ -65,19 +65,19 @@ console.log(`[village] Loaded game: ${gameConfig.raw.id} (${gameConfig.raw.name}
 
 // --- Config ---
 const PORT = parseInt(process.env.VILLAGE_PORT || '7001', 10);
-const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || (isGridGame ? '60000' : '120000'), 10);
 const TICKS_PER_PHASE = parseInt(process.env.VILLAGE_TICKS_PER_PHASE || '4', 10);
 const SCENE_HISTORY_CAP = parseInt(process.env.VILLAGE_SCENE_HISTORY_CAP || '10', 10);
 const VILLAGE_SECRET = process.env.VILLAGE_SECRET || '';
 const VILLAGE_DAILY_COST_CAP = parseFloat(process.env.VILLAGE_DAILY_COST_CAP || '2'); // $/bot/day
 const MAX_PUBLIC_LOG_DEPTH = parseInt(process.env.VILLAGE_MAX_LOG_DEPTH || '20', 10);
 const SCENE_TIMEOUT_MS = 45_000;
-const REMOTE_SCENE_TIMEOUT_MS = 60_000;
+const REMOTE_SCENE_TIMEOUT_MS = 120_000;
 const MAX_CONSECUTIVE_FAILURES_REMOTE = 5;
 const PORTAL_URL = 'http://127.0.0.1:3000';
 const EMPTY_CLEAR_TICKS = 3;
 
 const isGridGame = gameConfig.isGridGame;
+const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || (isGridGame ? '60000' : '120000'), 10);
 const STATE_FILE = join(__dirname, `state-${VILLAGE_GAME}.json`);
 const MEMORY_FILENAME = isGridGame ? 'survival.md' : 'village.md';
 const USAGE_FILE = join(paths.PROJECT_DIR, 'api-router', 'usage.json');
@@ -417,7 +417,10 @@ async function sendSceneRemote(botName, conversationId, scene) {
   try {
     const resp = await fetch(`${PORTAL_URL}/api/village/relay`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${VILLAGE_SECRET}`,
+      },
       body: JSON.stringify({ botName, conversationId, scene }),
       signal: AbortSignal.timeout(REMOTE_SCENE_TIMEOUT_MS),
     });
