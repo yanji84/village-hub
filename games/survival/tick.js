@@ -29,6 +29,17 @@ import { runFastTick } from './autopilot.js';
 import { appendVillageMemory, buildMemoryEntry } from '../../memory.js';
 import { needsSummarization, summarizeVillageMemory } from '../../summarize.js';
 
+function buildV2Payload(scene, gameConfig) {
+  return {
+    v: 2,
+    scene,
+    tools: gameConfig.raw.toolSchemas || [],
+    systemPrompt: gameConfig.raw.systemPrompt || null,
+    allowedReads: gameConfig.raw.allowedReads || [],
+    maxActions: gameConfig.raw.maxActions || 2,
+  };
+}
+
 const require = createRequire(import.meta.url);
 const paths = require('../../../lib/paths');
 
@@ -284,7 +295,8 @@ export async function survivalTick(ctx) {
     });
 
     const conversationId = `survival:${botName}`;
-    allSceneRequests.push({ botName, port, conversationId, scene });
+    const payload = buildV2Payload(scene, gameConfig);
+    allSceneRequests.push({ botName, port, conversationId, payload });
   }
 
   // Broadcast thinking state for all bots being sent scenes
@@ -294,12 +306,12 @@ export async function survivalTick(ctx) {
 
   // Send scenes in parallel
   const allResults = await Promise.all(
-    allSceneRequests.map(async ({ botName, port, conversationId, scene }) => {
+    allSceneRequests.map(async ({ botName, port, conversationId, payload }) => {
       botsSent++;
       const info = participants.get(botName);
       const response = info?.remote
-        ? await sendSceneRemote(botName, conversationId, scene)
-        : await sendScene(botName, port, conversationId, scene);
+        ? await sendSceneRemote(botName, conversationId, payload)
+        : await sendScene(botName, port, conversationId, payload);
       return { botName, response };
     })
   );

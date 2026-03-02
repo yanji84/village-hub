@@ -24,6 +24,17 @@ import {
 import { appendVillageMemory, buildMemoryEntry } from '../../memory.js';
 import { needsSummarization, summarizeVillageMemory } from '../../summarize.js';
 
+function buildV2Payload(scene, gameConfig) {
+  return {
+    v: 2,
+    scene,
+    tools: gameConfig.raw.toolSchemas || [],
+    systemPrompt: gameConfig.raw.systemPrompt || null,
+    allowedReads: gameConfig.raw.allowedReads || [],
+    maxActions: gameConfig.raw.maxActions || 2,
+  };
+}
+
 const require = createRequire(import.meta.url);
 const paths = require('../../../lib/paths');
 
@@ -172,17 +183,18 @@ export async function socialTick(ctx) {
         gameConfig,
       });
 
-      allSceneRequests.push({ botName, port: pInfo.port, remote: pInfo.remote, conversationId, scene, loc });
+      const payload = buildV2Payload(scene, gameConfig);
+      allSceneRequests.push({ botName, port: pInfo.port, remote: pInfo.remote, conversationId, payload, loc });
     }
   }
 
   // Send all scenes across all locations in parallel
   const allResults = await Promise.all(
-    allSceneRequests.map(async ({ botName, port, remote, conversationId, scene, loc }) => {
+    allSceneRequests.map(async ({ botName, port, remote, conversationId, payload, loc }) => {
       botsSent++;
       const response = remote
-        ? await sendSceneRemote(botName, conversationId, scene)
-        : await sendScene(botName, port, conversationId, scene);
+        ? await sendSceneRemote(botName, conversationId, payload)
+        : await sendScene(botName, port, conversationId, payload);
       return { botName, response, loc };
     })
   );

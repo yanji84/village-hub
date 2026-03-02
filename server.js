@@ -376,7 +376,7 @@ async function recoverParticipants() {
 
 // --- Send scene to a bot ---
 
-async function sendScene(botName, port, conversationId, scene) {
+async function sendScene(botName, port, conversationId, payload) {
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (VILLAGE_SECRET) {
@@ -386,7 +386,7 @@ async function sendScene(botName, port, conversationId, scene) {
     const resp = await fetch(`http://127.0.0.1:${port}/village`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ conversationId, scene }),
+      body: JSON.stringify({ conversationId, ...payload }),
       signal: AbortSignal.timeout(SCENE_TIMEOUT_MS),
     });
 
@@ -406,7 +406,7 @@ async function sendScene(botName, port, conversationId, scene) {
   }
 }
 
-async function sendSceneRemote(botName, conversationId, scene) {
+async function sendSceneRemote(botName, conversationId, payload) {
   try {
     const resp = await fetch(`${PORTAL_URL}/api/village/relay`, {
       method: 'POST',
@@ -414,7 +414,7 @@ async function sendSceneRemote(botName, conversationId, scene) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${VILLAGE_SECRET}`,
       },
-      body: JSON.stringify({ botName, conversationId, scene }),
+      body: JSON.stringify({ botName, conversationId, ...payload }),
       signal: AbortSignal.timeout(REMOTE_SCENE_TIMEOUT_MS),
     });
 
