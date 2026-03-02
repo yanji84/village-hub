@@ -1197,7 +1197,15 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    const name = displayName || botName;
+    // For local bots, always read identity.json on the server to get the correct display name
+    // (the plugin may send the system name if identity.json wasn't ready at activation time)
+    let name = displayName || botName;
+    if (!remote) {
+      try {
+        const identity = await identityManager.read(botName);
+        if (identity?.self?.displayName) name = identity.self.displayName;
+      } catch { /* use what was provided */ }
+    }
 
     // Add to participants map
     participants.set(botName, remote
@@ -1409,6 +1417,22 @@ const server = createServer(async (req, res) => {
     const beforeTick = url.searchParams.has('before') ? parseInt(url.searchParams.get('before'), 10) : Infinity;
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
 
+    // Filter events by current game type so survival events don't show in social UI and vice versa
+    const SURVIVAL_TYPES = new Set(['survival_event', 'survival_tick', 'fast_tick', 'thinking']);
+    const SOCIAL_TYPES = new Set(['action', 'village_event', 'conversation_spice']);
+    function matchesGameType(ev) {
+      if (isGridGame) {
+        if (SOCIAL_TYPES.has(ev.type)) return false;
+        // Skip social-format tick events (have 'actions' but no 'botStates')
+        if (ev.type === 'tick' && ev.actions && !ev.botStates) return false;
+      } else {
+        if (SURVIVAL_TYPES.has(ev.type)) return false;
+        // Skip survival-format tick events (have 'botStates' but no 'actions')
+        if (ev.type === 'tick' && ev.botStates && !ev.actions) return false;
+      }
+      return true;
+    }
+
     try {
       // List log files sorted descending (newest first)
       const files = (await readdir(LOGS_DIR)).filter(f => f.endsWith('.jsonl')).sort().reverse();
@@ -1424,6 +1448,7 @@ const server = createServer(async (req, res) => {
           try {
             const ev = JSON.parse(lines[i]);
             if (ev.tick !== undefined && ev.tick >= beforeTick) continue;
+            if (!matchesGameType(ev)) continue;
             if (events.length >= limit) { hasMore = true; break outer; }
             events.push(ev);
           } catch { /* skip malformed lines */ }

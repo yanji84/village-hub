@@ -350,7 +350,25 @@ function phaseTint() {
 }
 
 // ========== BUBBLES (DOM) ==========
+const bubbleQueue = [];
+let bubbleTimer = null;
+const BUBBLE_SHOW_MS = 12000;   // each bubble visible for 12s
+const BUBBLE_FADE_MS = 800;
+const BUBBLE_STAGGER_MS = 3000; // 3s between bubbles
+
 function showBubble(botName, text, isWhisper) {
+  bubbleQueue.push({ botName, text, isWhisper });
+  if (!bubbleTimer) drainBubbleQueue();
+}
+
+function drainBubbleQueue() {
+  if (bubbleQueue.length === 0) { bubbleTimer = null; return; }
+  const { botName, text, isWhisper } = bubbleQueue.shift();
+  showBubbleNow(botName, text, isWhisper);
+  bubbleTimer = setTimeout(drainBubbleQueue, BUBBLE_STAGGER_MS);
+}
+
+function showBubbleNow(botName, text, isWhisper) {
   removeBubble(botName);
   const s = sprites[botName]; if (!s) return;
   const txt = text.length > 80 ? text.slice(0,80)+'\u2026' : text;
@@ -359,8 +377,8 @@ function showBubble(botName, text, isWhisper) {
   el.innerHTML = `<span class="bn" style="color:${s.color}">${esc(s.dn)}</span>${esc(txt)}`;
   document.getElementById('map-wrap').appendChild(el);
   bubbleDom[botName] = { el };
-  setTimeout(() => el.classList.add('fade'), 4200);
-  setTimeout(() => removeBubble(botName), 5000);
+  setTimeout(() => el.classList.add('fade'), BUBBLE_SHOW_MS - BUBBLE_FADE_MS);
+  setTimeout(() => removeBubble(botName), BUBBLE_SHOW_MS);
 }
 
 function removeBubble(name) {
