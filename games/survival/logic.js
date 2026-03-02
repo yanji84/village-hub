@@ -389,6 +389,7 @@ export function applyDirective(botName, botState, params) {
     x: params.x != null ? params.x : null,
     y: params.y != null ? params.y : null,
     setAt: botState._currentTick || 0,
+    strategy: params.strategy ? String(params.strategy).slice(0, 300) : (botState.directive?.strategy || null),
   };
 
   // Reset pathfinding when directive changes

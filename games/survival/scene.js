@@ -221,8 +221,14 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
     if (directive.x != null && directive.y != null) directiveStr += ` | Goto: (${directive.x},${directive.y})`;
     directiveStr += ` | Set at tick ${directive.setAt || '?'}`;
     lines.push(directiveStr);
+    if (directive.strategy) {
+      lines.push(`Strategy: ${directive.strategy}`);
+    }
   } else {
     lines.push('No active directive. Your soldier is idle. Set a directive!');
+  }
+  if (!directive?.strategy) {
+    lines.push('TIP: Set a strategy note to remember your plan across ticks: { intent: "...", strategy: "my multi-tick plan" }');
   }
   lines.push('');
 
@@ -322,7 +328,7 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
     lines.push('');
   }
 
-  lines.push('  survival_set_directive { intent, target, fallback, x, y, message }');
+  lines.push('  survival_set_directive { intent, target, fallback, x, y, message, strategy }');
   lines.push('    Intents: gather, hunt, flee, craft, eat, explore, defend, goto, idle');
   lines.push('    Examples:');
   lines.push('      { intent: "gather", target: "iron_ore", fallback: "stone" }');
@@ -330,6 +336,8 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
   lines.push('      { intent: "goto", x: 15, y: 20 }');
   lines.push('      { intent: "explore" }');
   lines.push('      { intent: "defend" }');
+  lines.push('      { intent: "gather", target: "iron_ore", strategy: "Craft iron sword, ally with weak bot, then betray leader" }');
+  lines.push('    strategy: a private note to yourself — persists across ticks so you remember your plan.');
   lines.push('');
 
   lines.push('  survival_eat { item: "berry" } — Eat food immediately');
