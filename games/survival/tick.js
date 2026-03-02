@@ -42,6 +42,34 @@ export function fastTick(ctx) {
 
   const { events, positionUpdates } = runFastTick(state, gameConfig);
 
+  // Score autopilot events
+  if (state.round && gameConfig.raw.scoring) {
+    for (const ev of events) {
+      if (ev.action === 'gather' && ev.bot) {
+        awardPoints(state.round.scores, ev.bot, 'gather', gameConfig);
+      }
+      if (ev.action === 'move' && ev.bot && ev.to) {
+        if (!state.round.explored) state.round.explored = {};
+        if (!state.round.explored[ev.bot]) state.round.explored[ev.bot] = {};
+        const tileKey = `${ev.to.x},${ev.to.y}`;
+        if (!state.round.explored[ev.bot][tileKey]) {
+          state.round.explored[ev.bot][tileKey] = 1;
+          awardPoints(state.round.scores, ev.bot, 'explore', gameConfig);
+        }
+      }
+      if (ev.action === 'killed' && ev.bot) {
+        awardPoints(state.round.scores, ev.bot, 'death', gameConfig);
+      }
+      if (ev.action === 'attack' && ev.bot) {
+        // Check if the target was killed in this batch
+        const targetBot = state.bots[ev.target];
+        if (targetBot && targetBot.health <= 0) {
+          awardPoints(state.round.scores, ev.bot, 'kill', gameConfig);
+        }
+      }
+    }
+  }
+
   for (const ev of events) {
     broadcastEvent({
       type: 'survival_event',
