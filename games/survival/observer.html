@@ -16,45 +16,31 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
 
 /* Right panel */
 #panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:#0a0a0a;border-left:1px solid #1a1a1a}
-#bot-info{flex-shrink:0;padding:6px 10px;border-bottom:1px solid #1a1a1a}
-#bot-info h3{font-size:12px;color:#4a9;margin-bottom:3px;font-weight:700}
-#bot-info .stat{font-size:10px;line-height:1.4;color:#999}
-#bot-info .stat .label{color:#666;display:inline-block;width:56px}
-#bot-info .stat .val{color:#c8c8c8}
-#bot-info .stat .val.hp-high{color:#4caf50}
-#bot-info .stat .val.hp-mid{color:#ff9800}
-#bot-info .stat .val.hp-low{color:#f44336}
-#bot-info .stat .val.dead{color:#555;text-decoration:line-through}
-#bot-info .no-sel{color:#444;font-style:italic;font-size:11px}
-#bot-list{padding:4px 10px;border-bottom:1px solid #1a1a1a;flex-shrink:0;max-height:90px;overflow-y:auto}
-#bot-list h4{font-size:10px;color:#555;margin-bottom:2px;text-transform:uppercase;letter-spacing:1px}
-.bl-entry{font-size:10px;padding:1px 4px;cursor:pointer;border-radius:2px;display:flex;align-items:center;gap:5px}
-.bl-entry:hover{background:#1a1a1a}
-.bl-entry.selected{background:#1a2a1a}
-.bl-entry .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.bl-entry .bname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.bl-entry .bhp{color:#666;font-size:10px}
-.bl-entry.dead-entry{opacity:.4;text-decoration:line-through}
 
+/* Intel panel — consolidated scoreboard + bot info + diplomacy */
+#intel-panel{flex-shrink:0;max-height:50%;overflow-y:auto;padding:6px 10px;border-bottom:1px solid #1a1a1a}
+#intel-panel .intel-section{margin-bottom:6px}
+#intel-panel .intel-header{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px}
+#intel-panel table{width:100%;border-collapse:collapse;font-size:10px}
+#intel-panel td{padding:1px 4px}
+#intel-panel .sb-rank{color:#555;width:16px}
+#intel-panel .sb-name{color:#bbb;cursor:pointer}
+#intel-panel .sb-name:hover{color:#fff}
+#intel-panel .sb-score{text-align:right;color:#4a9;font-weight:700}
+#intel-panel .sb-leader .sb-name{color:#fdd835;font-weight:700}
+#intel-panel .sb-leader .sb-score{color:#fdd835}
+#intel-panel .sb-selected{background:#1a2a1a}
+#intel-panel .bot-detail{font-size:10px;color:#999;line-height:1.5;padding:4px 0}
+#intel-panel .bot-detail .label{color:#666;display:inline-block;width:56px}
+#intel-panel .bot-detail .val{color:#c8c8c8}
+#intel-panel .bot-detail .hp-high{color:#4caf50}
+#intel-panel .bot-detail .hp-mid{color:#ff9800}
+#intel-panel .bot-detail .hp-low{color:#f44336}
+#intel-panel .bot-detail .dead{color:#555;text-decoration:line-through}
+#intel-panel .strategy-text{color:#ff9800;font-style:italic;font-size:10px;padding:2px 0;word-wrap:break-word}
+#intel-panel .dip-entry{font-size:10px;line-height:1.4;padding:1px 0}
 /* Log wrap */
 #log-wrap{flex:1;display:flex;flex-direction:column;min-height:0}
-
-/* Status strip */
-#status-strip{flex-shrink:0;max-height:72px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:4px;padding:6px 10px;border-bottom:1px solid #1a1a1a;background:#0d0d0d}
-.ss-bot{display:flex;align-items:center;gap:4px;font-size:10px;padding:2px 6px;border-radius:3px;background:#111;white-space:nowrap}
-.ss-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.ss-dot.danger{animation:dangerPulse 1s ease-in-out infinite}
-@keyframes dangerPulse{0%,100%{box-shadow:0 0 2px #f44336}50%{box-shadow:0 0 8px #f44336,0 0 12px rgba(244,67,54,.5)}}
-.ss-name{color:#bbb;font-weight:600;max-width:60px;overflow:hidden;text-overflow:ellipsis}
-.ss-bars{display:flex;flex-direction:column;gap:1px;width:32px}
-.ss-bar{height:4px;border-radius:1px;background:#222;overflow:hidden}
-.ss-bar-fill{height:100%;transition:width .3s}
-.ss-bar-fill.hp-high{background:#4caf50}
-.ss-bar-fill.hp-mid{background:#ff9800}
-.ss-bar-fill.hp-low{background:#f44336}
-.ss-bar-fill.hunger{background:#ff9800}
-.ss-directive{font-size:9px;color:#888;font-style:italic;max-width:50px;overflow:hidden;text-overflow:ellipsis}
-.ss-bot.dead{opacity:.35}
 
 /* Chat log */
 #chat-wrap{flex:2;display:flex;flex-direction:column;min-height:0;border-bottom:1px solid #1a1a1a}
@@ -97,30 +83,14 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
 #controls label{font-size:10px;color:#555;cursor:pointer;user-select:none}
 #controls input[type=checkbox]{margin-right:3px}
 
-/* Diplomacy panel */
-#diplomacy-panel{padding:4px 10px;border-bottom:1px solid #1a1a1a;flex-shrink:0;max-height:80px;overflow-y:auto}
-#diplomacy-panel h4{font-size:10px;color:#555;margin-bottom:2px;text-transform:uppercase;letter-spacing:1px}
-.dip-entry{font-size:10px;line-height:1.4;padding:1px 0}
+/* Activity log event types */
 .dip-alliance{color:#4fc3f7}
-.dip-proposal{color:#888;font-style:italic}
 .dip-betrayal{color:#ff5722;font-weight:700}
 .dip-deception{color:#ff9800;font-style:italic}
-.bounty-crown{color:#fdd835}
 .act-entry.alliance{color:#4fc3f7;border-left-color:#29b6f6}
 .act-entry.betrayal{color:#ff5722;font-weight:700;border-left-color:#ff5722;background:rgba(255,87,34,.08)}
 .act-entry.bounty{color:#fdd835;border-left-color:#fdd835}
 .act-entry.deception{color:#ff9800;border-left-color:#ff9800;font-style:italic}
-
-/* Scoreboard panel */
-#scoreboard{padding:4px 10px;border-bottom:1px solid #1a1a1a;flex-shrink:0;max-height:120px;overflow-y:auto}
-#scoreboard h4{font-size:10px;color:#555;margin-bottom:2px;text-transform:uppercase;letter-spacing:1px}
-#scoreboard table{width:100%;border-collapse:collapse;font-size:10px}
-#scoreboard td{padding:1px 4px}
-#scoreboard .sb-rank{color:#555;width:16px}
-#scoreboard .sb-name{color:#bbb}
-#scoreboard .sb-score{text-align:right;color:#4a9;font-weight:700}
-#scoreboard .sb-leader .sb-name{color:#fdd835;font-weight:700}
-#scoreboard .sb-leader .sb-score{color:#fdd835}
 
 /* Round-end overlay */
 #round-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:50}
@@ -169,23 +139,10 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
       <div id="tooltip"></div>
     </div>
     <div id="panel">
-      <div id="bot-info">
-        <h3>Selected Bot</h3>
-        <div class="no-sel">Click a bot on the map or list to inspect</div>
-      </div>
-      <div id="bot-list">
-        <h4>Bots</h4>
+      <div id="intel-panel">
+        <div id="intel-body"></div>
       </div>
       <div id="log-wrap">
-        <div id="scoreboard">
-          <h4>Scoreboard</h4>
-          <div id="scoreboard-body"></div>
-        </div>
-        <div id="diplomacy-panel">
-          <h4>Diplomacy (God View)</h4>
-          <div id="diplomacy-body"></div>
-        </div>
-        <div id="status-strip"></div>
         <div id="chat-wrap">
           <div id="chat-header">Chat</div>
           <div id="chat-log"></div>
@@ -1457,90 +1414,108 @@ app.ticker.add(() => {
 });
 
 // ========== UI: BOT INFO PANEL ==========
-function renderBotInfo() {
-  const el = document.getElementById('bot-info');
-  if (!selectedBot || !bots[selectedBot]) {
-    el.innerHTML = '<h3>Selected Bot</h3><div class="no-sel">Click a bot on the map or list to inspect</div>';
-    return;
+// ========== UI: CONSOLIDATED INTEL PANEL ==========
+function renderIntelPanel() {
+  const el = document.getElementById('intel-body');
+  let html = '';
+
+  // --- Scoreboard ---
+  html += '<div class="intel-section"><div class="intel-header">Scoreboard</div>';
+  if (roundScores && Object.keys(roundScores).length > 0) {
+    const sorted = Object.entries(roundScores)
+      .map(([id, score]) => ({ id, name: bots[id]?.displayName || id, score }))
+      .sort((a, b) => b.score - a.score);
+    html += '<table>';
+    sorted.forEach((s, i) => {
+      const isLeader = i === 0;
+      const isSel = selectedBot === s.id;
+      const color = getBotColor(s.id);
+      const cls = (isLeader ? ' sb-leader' : '') + (isSel ? ' sb-selected' : '');
+      const bot = bots[s.id];
+      const alive = bot?.alive !== false;
+      const maxHp = bot?.maxHealth || 100;
+      const hpPct = alive ? Math.round((bot?.health || 0) / maxHp * 100) : 0;
+      const hpCls = !alive ? 'dead' : hpPct > 50 ? 'hp-high' : hpPct > 25 ? 'hp-mid' : 'hp-low';
+      const crown = isLeader ? '\ud83d\udc51 ' : '';
+      const thinkDot = bot?.thinking ? ' \ud83d\udca1' : '';
+      html += `<tr class="${cls}">`;
+      html += `<td class="sb-rank">${i + 1}.</td>`;
+      html += `<td class="sb-name" style="color:${isLeader ? '#fdd835' : color}" data-bot="${esc(s.id)}">${crown}${esc(s.name)}${thinkDot}</td>`;
+      html += `<td class="sb-score">${s.score}</td>`;
+      html += `<td style="font-size:9px" class="${hpCls}">${alive ? hpPct + '%' : 'DEAD'}</td>`;
+      html += '</tr>';
+    });
+    html += '</table>';
+  } else {
+    html += '<div style="font-size:10px;color:#444;font-style:italic">No scores yet</div>';
   }
-  const bot = bots[selectedBot];
-  const alive = bot.alive !== false;
-  const maxHp = bot.maxHealth || 100;
-  const hpClass = !alive ? 'dead' : bot.health > maxHp * 0.5 ? 'hp-high' : bot.health > maxHp * 0.25 ? 'hp-mid' : 'hp-low';
-  const color = getBotColor(bot._id);
+  html += '</div>';
 
-  let html = `<h3 style="color:${color}">${esc(bot.displayName || bot._id)}</h3>`;
-  html += `<div class="stat"><span class="label">Status:</span> <span class="val ${alive ? '' : 'dead'}">${alive ? 'Alive' : 'Dead'}</span></div>`;
-  html += `<div class="stat"><span class="label">HP:</span> <span class="val ${hpClass}">${bot.health !== undefined ? bot.health : '?'}/${maxHp}</span></div>`;
-  html += `<div class="stat"><span class="label">Hunger:</span> <span class="val">${bot.hunger !== undefined ? bot.hunger : '?'}</span></div>`;
-  html += `<div class="stat"><span class="label">Position:</span> <span class="val">(${bot.x}, ${bot.y})</span></div>`;
-
-  const tChar = terrainAt(bot.x, bot.y);
-  const tName = TERRAIN_NAMES[tChar] || 'Unknown';
-  html += `<div class="stat"><span class="label">Terrain:</span> <span class="val">${esc(tName)}</span></div>`;
-
-  if (bot.equipment) {
-    const items = [];
-    if (bot.equipment.weapon) items.push('Wpn: ' + bot.equipment.weapon);
-    if (bot.equipment.armor) items.push('Arm: ' + bot.equipment.armor);
-    if (bot.equipment.tool) items.push('Tool: ' + bot.equipment.tool);
-    if (items.length) {
-      html += `<div class="stat"><span class="label">Equip:</span> <span class="val item">${esc(items.join(', '))}</span></div>`;
-    }
-  }
-
-  if (bot.inventory && bot.inventory.length) {
-    html += `<div class="stat"><span class="label">Items:</span> <span class="val">${esc(bot.inventory.join(', '))}</span></div>`;
-  }
-
-  // Directive display
-  if (bot.directive && bot.directive.intent) {
-    let dirStr = bot.directive.intent;
-    if (bot.directive.target) dirStr += ' \u2192 ' + bot.directive.target;
-    html += `<div class="stat"><span class="label">Directive:</span> <span class="val act">${esc(dirStr)}</span></div>`;
-    if (bot.directive.strategy) {
-      html += `<div class="stat"><span class="label">Strategy:</span> <span class="val" style="color:#ff9800;font-style:italic">${esc(bot.directive.strategy)}</span></div>`;
-    }
-  }
-
-  // Thinking indicator
-  if (bot.thinking) {
-    html += `<div class="stat"><span class="val" style="color:#64b5f6">Thinking...</span></div>`;
-  }
-
-  el.innerHTML = html;
-}
-
-// ========== UI: BOT LIST ==========
-function renderBotList() {
-  const el = document.getElementById('bot-list');
-  const sorted = Object.values(bots).sort((a, b) => {
-    if ((a.alive !== false) !== (b.alive !== false)) return (a.alive !== false) ? -1 : 1;
-    return (a.displayName || a._id).localeCompare(b.displayName || b._id);
-  });
-
-  let html = '<h4>Bots (' + sorted.length + ')</h4>';
-  for (const bot of sorted) {
+  // --- Selected Bot Detail ---
+  if (selectedBot && bots[selectedBot]) {
+    const bot = bots[selectedBot];
     const alive = bot.alive !== false;
     const color = getBotColor(bot._id);
-    const sel = selectedBot === bot._id ? ' selected' : '';
-    const deadCls = alive ? '' : ' dead-entry';
+    html += `<div class="intel-section"><div class="intel-header" style="color:${color}">${esc(bot.displayName || bot._id)}</div>`;
+    html += '<div class="bot-detail">';
+
     const maxHp = bot.maxHealth || 100;
-    html += `<div class="bl-entry${sel}${deadCls}" data-bot="${esc(bot._id)}">`;
-    html += `<span class="dot" style="background:${color}"></span>`;
-    html += `<span class="bname">${esc(bot.displayName || bot._id)}</span>`;
-    html += `<span class="bhp">${alive ? bot.health + '/' + maxHp : 'DEAD'}</span>`;
-    html += '</div>';
+    const hpCls = !alive ? 'dead' : bot.health > maxHp * 0.5 ? 'hp-high' : bot.health > maxHp * 0.25 ? 'hp-mid' : 'hp-low';
+    html += `<span class="label">HP:</span> <span class="val ${hpCls}">${bot.health !== undefined ? bot.health : '?'}/${maxHp}</span> `;
+    html += `<span class="label">Hunger:</span> <span class="val">${bot.hunger !== undefined ? Math.round(bot.hunger) : '?'}</span> `;
+    html += `<span class="label">Pos:</span> <span class="val">(${bot.x},${bot.y})</span><br>`;
+
+    if (bot.equipment) {
+      const eq = [];
+      if (bot.equipment.weapon) eq.push(bot.equipment.weapon);
+      if (bot.equipment.armor) eq.push(bot.equipment.armor);
+      if (bot.equipment.tool) eq.push(bot.equipment.tool);
+      if (eq.length) html += `<span class="label">Equip:</span> <span class="val">${esc(eq.join(', '))}</span><br>`;
+    }
+
+    if (bot.directive && bot.directive.intent) {
+      let dirStr = bot.directive.intent;
+      if (bot.directive.target) dirStr += ' \u2192 ' + bot.directive.target;
+      html += `<span class="label">Directive:</span> <span class="val" style="color:#4fc3f7">${esc(dirStr)}</span><br>`;
+    }
+
+    if (bot.directive?.strategy) {
+      html += `<div class="strategy-text">\ud83e\udde0 ${esc(bot.directive.strategy)}</div>`;
+    }
+
+    html += '</div></div>';
   }
+
+  // --- Diplomacy ---
+  const dipParts = [];
+  for (const [key, alliance] of Object.entries(dipAlliances)) {
+    const [a, b] = key.split(':');
+    const nameA = bots[a]?.displayName || a;
+    const nameB = bots[b]?.displayName || b;
+    dipParts.push(`<div class="dip-entry dip-alliance">\u2694\ufe0f ${esc(nameA)} \u2194 ${esc(nameB)}</div>`);
+  }
+  for (const [key] of Object.entries(dipProposals)) {
+    const [from, to] = key.split('\u2192');
+    dipParts.push(`<div class="dip-entry" style="color:#888;font-style:italic">\u23f3 ${esc(bots[from]?.displayName || from)} \u2192 ${esc(bots[to]?.displayName || to)}</div>`);
+  }
+  for (const b of dipBetrayals.slice(-3)) {
+    dipParts.push(`<div class="dip-entry dip-betrayal">\ud83d\udde1\ufe0f ${esc(bots[b.betrayer]?.displayName || b.betrayer)} betrayed ${esc(bots[b.victim]?.displayName || b.victim)}</div>`);
+  }
+  if (bountyBot && bots[bountyBot]) {
+    dipParts.push(`<div class="dip-entry" style="color:#fdd835">\ud83d\udc51 Bounty: ${esc(bots[bountyBot]?.displayName || bountyBot)}</div>`);
+  }
+  if (dipParts.length > 0) {
+    html += '<div class="intel-section"><div class="intel-header">Diplomacy</div>' + dipParts.join('') + '</div>';
+  }
+
   el.innerHTML = html;
 
-  // Click handlers
-  el.querySelectorAll('.bl-entry').forEach(entry => {
-    entry.addEventListener('click', () => {
-      selectedBot = entry.dataset.bot;
+  // Click handlers for scoreboard names
+  el.querySelectorAll('.sb-name[data-bot]').forEach(td => {
+    td.addEventListener('click', () => {
+      selectedBot = td.dataset.bot;
       autoFollow = document.getElementById('follow-toggle').checked;
-      renderBotInfo();
-      renderBotList();
+      renderIntelPanel();
     });
   });
 }
@@ -1579,101 +1554,12 @@ function addTickSeparator(text) {
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
 
-function renderStatusStrip() {
-  const el = document.getElementById('status-strip');
-  const sorted = Object.values(bots).sort((a, b) => {
-    if ((a.alive !== false) !== (b.alive !== false)) return (a.alive !== false) ? -1 : 1;
-    return (a.displayName || a._id).localeCompare(b.displayName || b._id);
-  });
-  let html = '';
-  for (const bot of sorted) {
-    const alive = bot.alive !== false;
-    const color = getBotColor(bot._id);
-    const maxHp = bot.maxHealth || 100;
-    const hpRatio = alive ? Math.max(0, (bot.health || 0) / maxHp) : 0;
-    const hpClass = hpRatio > 0.5 ? 'hp-high' : hpRatio > 0.25 ? 'hp-mid' : 'hp-low';
-    const maxHunger = 100;
-    const hungerVal = bot.hunger !== undefined ? bot.hunger : 0;
-    const hungerRatio = Math.min(1, Math.max(0, hungerVal / maxHunger));
-    const danger = alive && (hpRatio <= 0.25 || hungerRatio >= 0.8);
-    const dir = bot.directive && bot.directive.intent ? bot.directive.intent : '';
-    html += `<div class="ss-bot${alive ? '' : ' dead'}">`;
-    html += `<span class="ss-dot${danger ? ' danger' : ''}" style="background:${color}"></span>`;
-    html += `<span class="ss-name">${esc(bot.displayName || bot._id)}</span>`;
-    html += `<div class="ss-bars">`;
-    html += `<div class="ss-bar"><div class="ss-bar-fill ${hpClass}" style="width:${hpRatio * 100}%"></div></div>`;
-    html += `<div class="ss-bar"><div class="ss-bar-fill hunger" style="width:${hungerRatio * 100}%"></div></div>`;
-    html += `</div>`;
-    if (dir) html += `<span class="ss-directive">${esc(dir)}</span>`;
-    html += `</div>`;
-  }
-  el.innerHTML = html;
-}
-
-// ========== SCOREBOARD ==========
-function renderScoreboard() {
-  const el = document.getElementById('scoreboard-body');
-  if (!roundScores || Object.keys(roundScores).length === 0) {
-    el.innerHTML = '<div style="font-size:10px;color:#444;font-style:italic">No scores yet</div>';
-    return;
-  }
-  const sorted = Object.entries(roundScores)
-    .map(([id, score]) => ({ id, name: bots[id]?.displayName || id, score }))
-    .sort((a, b) => b.score - a.score);
-  let html = '<table>';
-  sorted.forEach((s, i) => {
-    const cls = i === 0 ? ' class="sb-leader"' : '';
-    const color = getBotColor(s.id);
-    html += `<tr${cls}>`;
-    html += `<td class="sb-rank">${i + 1}.</td>`;
-    html += `<td class="sb-name" style="color:${i === 0 ? '#fdd835' : color}">${esc(s.name)}</td>`;
-    html += `<td class="sb-score">${s.score}</td>`;
-    html += '</tr>';
-  });
-  html += '</table>';
-  el.innerHTML = html;
-}
-
-function renderDiplomacyPanel() {
-  const el = document.getElementById('diplomacy-body');
-  const parts = [];
-
-  // Alliances
-  for (const [key, alliance] of Object.entries(dipAlliances)) {
-    const [a, b] = key.split(':');
-    const nameA = bots[a]?.displayName || a;
-    const nameB = bots[b]?.displayName || b;
-    const colorA = getBotColor(a);
-    const colorB = getBotColor(b);
-    parts.push(`<div class="dip-entry dip-alliance">\u2694\ufe0f <span style="color:${colorA}">${esc(nameA)}</span> \u2194 <span style="color:${colorB}">${esc(nameB)}</span> (tick ${alliance.formedAt})</div>`);
-  }
-
-  // Proposals
-  for (const [key, proposal] of Object.entries(dipProposals)) {
-    const [from, to] = key.split('\u2192');
-    const nameFrom = bots[from]?.displayName || from;
-    const nameTo = bots[to]?.displayName || to;
-    parts.push(`<div class="dip-entry dip-proposal">\u23f3 ${esc(nameFrom)} \u2192 ${esc(nameTo)} (pending)</div>`);
-  }
-
-  // Betrayals
-  for (const b of dipBetrayals.slice(-5)) {
-    const name = bots[b.betrayer]?.displayName || b.betrayer;
-    const victim = bots[b.victim]?.displayName || b.victim;
-    parts.push(`<div class="dip-entry dip-betrayal">\ud83d\udde1\ufe0f ${esc(name)} betrayed ${esc(victim)} (tick ${b.tick})</div>`);
-  }
-
-  // Bounty
-  if (bountyBot && bots[bountyBot]) {
-    const name = bots[bountyBot]?.displayName || bountyBot;
-    parts.push(`<div class="dip-entry"><span class="bounty-crown">\ud83d\udc51</span> Bounty on <b>${esc(name)}</b></div>`);
-  }
-
-  if (parts.length === 0) {
-    parts.push('<div class="dip-entry" style="color:#444;font-style:italic">No diplomatic activity yet</div>');
-  }
-  el.innerHTML = parts.join('');
-}
+// Legacy stubs — replaced by renderIntelPanel
+function renderBotInfo() { renderIntelPanel(); }
+function renderBotList() { renderIntelPanel(); }
+function renderStatusStrip() {}
+function renderScoreboard() {}
+function renderDiplomacyPanel() {}
 
 // Deception detection: compare bot's say message to their directive (observer-only)
 function detectDeception(botId, message) {
@@ -2166,11 +2052,7 @@ function processInit(d) {
   }
 
   online = true;
-  renderBotInfo();
-  renderBotList();
-  renderStatusStrip();
-  renderScoreboard();
-  renderDiplomacyPanel();
+  renderIntelPanel();
   updateBar();
 
   addActivity(`Connected to survival grid (${worldW}\u00d7${worldH}, ${Object.keys(bots).length} bots)`, '');
@@ -2372,11 +2254,7 @@ function processTick(d) {
   }).join(' | ');
   addTickSeparator(`Tick ${tick} \u2014 ${dayPhase} \u2014 ${aliveBots.length}/${total} alive${hints ? ' \u2014 ' + hints : ''}`);
 
-  renderBotInfo();
-  renderBotList();
-  renderStatusStrip();
-  renderScoreboard();
-  renderDiplomacyPanel();
+  renderIntelPanel();
   updateBar();
 }
 
