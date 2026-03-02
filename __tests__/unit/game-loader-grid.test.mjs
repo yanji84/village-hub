@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const survivalPath = join(__dirname, '../../games/survival.json');
+const survivalPath = join(__dirname, '../../games/survival/schema.json');
 
 describe('loadGame — grid type', () => {
   it('loads survival.json successfully', () => {
@@ -48,7 +48,7 @@ describe('loadGame — grid type', () => {
 
 describe('loadGame — social type (regression)', () => {
   it('loads social-village.json with isGridGame false', () => {
-    const socialPath = join(__dirname, '../../games/social-village.json');
+    const socialPath = join(__dirname, '../../games/social/schema.json');
     const config = loadGame(socialPath);
     expect(config.isGridGame).toBe(false);
     expect(config.raw.id).toBeDefined();

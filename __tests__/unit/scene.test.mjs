@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildScene } from '../../scene.js';
+import { buildScene } from '../../games/social/scene.js';
 import { loadGame } from '../../game-loader.js';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const gameConfig = loadGame(join(__dirname, '../../games/social-village.json'));
+const gameConfig = loadGame(join(__dirname, '../../games/social/schema.json'));
 
 const LOCATION_NAMES = gameConfig.locationNames;
 const ALL_LOCATIONS = gameConfig.locationSlugs;

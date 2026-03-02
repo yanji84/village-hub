@@ -13,41 +13,18 @@
 
 import { createServer } from 'node:http';
 import { readFile, writeFile, rename, copyFile, mkdir, readdir } from 'node:fs/promises';
-import { createReadStream, appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import { loadGame } from './game-loader.js';
-import { buildScene, getVillageTime } from './scene.js';
-import { appendVillageMemory, buildMemoryEntry } from './memory.js';
-import { needsSummarization, summarizeVillageMemory } from './summarize.js';
-import {
-  processActions,
-  advanceClock as advanceClockImpl,
-  enforceLogDepth,
-  computeQualityMetrics,
-  shouldSkipForCost,
-  readBotDailyCost as readBotDailyCostImpl,
-  trackInteractions,
-  updateCoLocation,
-  updateRelationships,
-  updateEmotions,
-  rollVillageEvent,
-  rollConversationSpice,
-  decayRelationships,
-} from './logic.js';
-
-// --- Survival game imports (only used when type=grid) ---
-import { generateWorld, placeInitialResources, respawnResources, mulberry32, randomEdgeTile } from './world.js';
-import { buildSurvivalScene, getDayPhase } from './survival-scene.js';
-import {
-  processActions as processSurvivalActions,
-  resolveCombat,
-  tickSurvival,
-  handleDeath,
-} from './survival-logic.js';
-import { runFastTick } from './autopilot.js';
+import { advanceClock as advanceClockImpl, readBotDailyCost as readBotDailyCostImpl } from './games/social/logic.js';
+import { getVillageTime } from './games/social/scene.js';
+import { generateWorld, placeInitialResources, mulberry32, randomEdgeTile } from './games/survival/world.js';
+import { getDayPhase } from './games/survival/scene.js';
+import { survivalTick, fastTick as survivalFastTick } from './games/survival/tick.js';
+import { socialTick } from './games/social/tick.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -60,7 +37,7 @@ const identityManager = require('../lib/identity-manager');
 
 // --- Load game schema ---
 const VILLAGE_GAME = process.env.VILLAGE_GAME || 'social-village';
-const gameConfig = loadGame(join(__dirname, 'games', VILLAGE_GAME + '.json'));
+const gameConfig = loadGame(join(__dirname, 'games', VILLAGE_GAME, 'schema.json'));
 console.log(`[village] Loaded game: ${gameConfig.raw.id} (${gameConfig.raw.name})`);
 
 // --- Config ---
@@ -451,9 +428,6 @@ function trackFailure(botName) {
   }
 }
 
-// --- Process actions from a bot (delegated to logic.js) ---
-// processActions imported from './logic.js'
-
 // --- Broadcast to observers ---
 
 function broadcastEvent(event) {
@@ -491,320 +465,26 @@ function advanceClock() {
   }
 }
 
+// --- Build tick context (shared state passed to game tick modules) ---
+
+function buildTickContext(tickStart) {
+  return {
+    state, gameConfig, participants, lastMoveTick,
+    broadcastEvent, sendScene, sendSceneRemote,
+    accumulateResponseCost, readBotDailyCost, saveState,
+    TICK_INTERVAL_MS, VILLAGE_DAILY_COST_CAP, MEMORY_FILENAME,
+    SCENE_HISTORY_CAP, MAX_PUBLIC_LOG_DEPTH, EMPTY_CLEAR_TICKS,
+    tickStart,
+    nextTickAt, // initial value; tick modules write back via ctx.nextTickAt
+  };
+}
+
 // --- Fast tick (autopilot, grid game only) ---
 
 function fastTick() {
   if (!isGridGame || paused || !state.terrain) return;
   if (tickInProgress) return; // skip if slow tick is running
-
-  const displayNames = {};
-  for (const [name, info] of participants) {
-    displayNames[name] = info.displayName;
-  }
-
-  const { events, positionUpdates } = runFastTick(state, gameConfig);
-
-  for (const ev of events) {
-    broadcastEvent({
-      type: 'survival_event',
-      tick: state.clock.tick,
-      bot: ev.bot,
-      displayName: displayNames[ev.bot] || ev.bot,
-      ...ev,
-    });
-  }
-
-  if (Object.keys(positionUpdates).length > 0) {
-    broadcastEvent({ type: 'fast_tick', positions: positionUpdates });
-  }
-}
-
-// --- Survival tick (grid game) ---
-
-async function survivalTick(tickStart) {
-  const tickNum = state.clock.tick;
-  const dayPhase = getDayPhase(tickNum, gameConfig.raw.dayNight);
-  const rng = mulberry32(state.worldSeed + tickNum);
-
-  // Build display name lookup
-  const displayNames = {};
-  for (const [name, info] of participants) {
-    displayNames[name] = info.displayName;
-  }
-
-  // Read daily costs for cost cap enforcement
-  const dailyCosts = new Map();
-  for (const [botName, info] of participants) {
-    if (info.remote) continue;
-    dailyCosts.set(botName, await readBotDailyCost(botName));
-  }
-
-  // 1. Tick survival (hunger/health drain)
-  const survivalEvents = tickSurvival(state.bots, gameConfig.raw.survival);
-  const allEvents = [...survivalEvents];
-
-  // 2. Handle deaths from starvation
-  for (const ev of survivalEvents) {
-    if (ev.action === 'starved') {
-      const deathEvents = handleDeath(
-        ev.bot, state.bots[ev.bot], state,
-        gameConfig.raw.survival, gameConfig.raw.world.terrain,
-        rng, gameConfig.raw.world.width, gameConfig.raw.world.height
-      );
-      allEvents.push(...deathEvents);
-    }
-  }
-
-  // 3. Respawn resources
-  const respawned = respawnResources(state.tileData, state.terrain, gameConfig.raw.world, tickNum, rng);
-  const respawnedCoords = respawned.map(k => { const [x, y] = k.split(',').map(Number); return { x, y }; });
-  if (respawned.length > 0) {
-    console.log(`[village] ${respawned.length} tiles respawned resources`);
-  }
-
-  // 4. Read village memory summaries
-  const VILLAGE_MEMORY_CAP = 1500;
-  const villageSummaries = new Map();
-  for (const [botName, info] of participants) {
-    if (info.remote) continue;
-    try {
-      const memPath = join(paths.memoryDir(botName), MEMORY_FILENAME);
-      const content = await readFile(memPath, 'utf-8');
-      const start = content.indexOf('## Village History (summarized)');
-      if (start !== -1) {
-        const afterHeader = content.indexOf('\n', start);
-        const nextSection = content.indexOf('\n## ', afterHeader + 1);
-        const summaryText = nextSection !== -1
-          ? content.slice(afterHeader + 1, nextSection).trim()
-          : content.slice(afterHeader + 1).trim();
-        if (summaryText) {
-          villageSummaries.set(botName, summaryText.slice(0, VILLAGE_MEMORY_CAP));
-        }
-      }
-    } catch { /* no memory file or no summary yet */ }
-  }
-
-  // 5. Build scenes per bot and send in parallel
-  const allSceneRequests = [];
-  let botsSent = 0;
-  let botsResponded = 0;
-  let botsSkippedCost = 0;
-  let errors = 0;
-
-  // Filter visible events per bot (events near them)
-  for (const [botName, botState] of Object.entries(state.bots)) {
-    if (!botState.alive) continue;
-    if (!participants.has(botName)) continue;
-
-    const botCost = dailyCosts.get(botName) || 0;
-    if (VILLAGE_DAILY_COST_CAP > 0 && botCost >= VILLAGE_DAILY_COST_CAP) {
-      botsSkippedCost++;
-      continue;
-    }
-
-    const { port } = participants.get(botName);
-
-    // Filter recent events to ones near this bot
-    const visibleEvents = allEvents.filter(ev => {
-      if (ev.bot === botName) return true;
-      if (ev.x !== undefined && ev.y !== undefined) {
-        const dist = Math.sqrt(Math.pow(botState.x - ev.x, 2) + Math.pow(botState.y - ev.y, 2));
-        return dist <= 10;
-      }
-      return true;
-    });
-
-    const scene = buildSurvivalScene({
-      botName,
-      botState,
-      worldState: state,
-      gameConfig,
-      currentTick: tickNum,
-      recentEvents: [...(state.recentEvents || []).slice(-10), ...visibleEvents],
-      villageSummary: villageSummaries.get(botName) || '',
-      isScout: false,
-      fastTickStats: botState.fastTickStats || null,
-    });
-
-    const conversationId = `survival:${botName}`;
-    allSceneRequests.push({ botName, port, conversationId, scene });
-  }
-
-  // Broadcast thinking state for all bots being sent scenes
-  for (const { botName } of allSceneRequests) {
-    broadcastEvent({ type: 'thinking', bot: botName, thinking: true });
-  }
-
-  // Send scenes in parallel
-  const allResults = await Promise.all(
-    allSceneRequests.map(async ({ botName, port, conversationId, scene }) => {
-      botsSent++;
-      const info = participants.get(botName);
-      const response = info?.remote
-        ? await sendSceneRemote(botName, conversationId, scene)
-        : await sendScene(botName, port, conversationId, scene);
-      return { botName, response };
-    })
-  );
-
-  // Clear thinking state
-  for (const { botName } of allSceneRequests) {
-    broadcastEvent({ type: 'thinking', bot: botName, thinking: false });
-  }
-
-  // Accumulate costs
-  for (const { botName, response } of allResults) {
-    accumulateResponseCost(botName, response);
-  }
-
-  // 6. Collect responses — resolve combat simultaneously, process other actions
-  const pendingAttacks = [];
-  const actionEvents = [];
-
-  for (const { botName, response } of allResults) {
-    if (!response || !response.actions) {
-      errors++;
-      continue;
-    }
-
-    botsResponded++;
-    const botState = state.bots[botName];
-    if (!botState) continue;
-
-    // Set current tick for directive timestamping
-    botState._currentTick = tickNum;
-
-    const { events: evts, pendingAttacks: atks } = processSurvivalActions(
-      botName, response.actions, botState, state, gameConfig
-    );
-    actionEvents.push(...evts);
-    pendingAttacks.push(...atks);
-
-    // Reset fast-tick stats after slow tick processes
-    botState.fastTickStats = {
-      tilesMoved: 0,
-      itemsGathered: [],
-      damageDealt: 0,
-      damageTaken: 0,
-    };
-  }
-
-  // Simultaneous combat resolution
-  const combatEvents = resolveCombat(pendingAttacks, state.bots, gameConfig);
-  actionEvents.push(...combatEvents);
-
-  // Handle combat deaths
-  for (const ev of combatEvents) {
-    if (ev.action === 'killed') {
-      const bs = state.bots[ev.bot];
-      if (bs && bs.health <= 0) {
-        const deathEvents = handleDeath(
-          ev.bot, bs, state,
-          gameConfig.raw.survival, gameConfig.raw.world.terrain,
-          rng, gameConfig.raw.world.width, gameConfig.raw.world.height
-        );
-        actionEvents.push(...deathEvents);
-      }
-    }
-  }
-
-  allEvents.push(...actionEvents);
-
-  // 7. Broadcast events
-  for (const ev of allEvents) {
-    broadcastEvent({
-      type: 'survival_event',
-      tick: tickNum,
-      dayPhase: dayPhase.name,
-      bot: ev.bot,
-      displayName: displayNames[ev.bot] || ev.bot,
-      ...ev,
-    });
-  }
-
-  // Cap recentEvents at 50
-  state.recentEvents = allEvents.slice(-50);
-
-  // 8. Write memories per bot
-  const timestamp = new Date().toISOString();
-  for (const [botName, botState] of Object.entries(state.bots)) {
-    if (!participants.has(botName)) continue;
-    if (participants.get(botName).remote) continue;
-
-    const botEvents = allEvents.filter(ev => {
-      if (ev.bot === botName) return true;
-      if (ev.x !== undefined && ev.y !== undefined) {
-        const dist = Math.sqrt(Math.pow(botState.x - ev.x, 2) + Math.pow(botState.y - ev.y, 2));
-        return dist <= 10;
-      }
-      return ev.action === 'say' || ev.action === 'death' || ev.action === 'respawn';
-    });
-
-    if (botEvents.length > 0) {
-      try {
-        const entry = buildMemoryEntry({
-          location: `(${botState.x},${botState.y})`,
-          timestamp,
-          events: botEvents,
-          botName,
-        });
-        if (entry.trim()) {
-          await appendVillageMemory(botName, entry, { filename: MEMORY_FILENAME });
-        }
-      } catch (err) {
-        console.error(`[village] Failed to write memory for ${botName}: ${err.message}`);
-      }
-    }
-  }
-
-  // Summarize oversized memory files
-  for (const [botName, info] of participants) {
-    if (info.remote) continue;
-    needsSummarization(botName, { filename: MEMORY_FILENAME }).then(needed => {
-      if (needed) summarizeVillageMemory(botName, { filename: MEMORY_FILENAME });
-    }).catch(() => {});
-  }
-
-  // 9. Save state
-  await saveState();
-
-  // Tick summary
-  const duration = Math.round((Date.now() - tickStart) / 1000);
-  const costStr = botsSkippedCost > 0 ? ` costSkipped=${botsSkippedCost}` : '';
-  console.log(
-    `[village] tick=${tickNum} phase=${dayPhase.name} duration=${duration}s ` +
-    `bots=${botsResponded}/${botsSent} events=${allEvents.length} errors=${errors}${costStr}`
-  );
-
-  // Broadcast tick summary
-  nextTickAt = Date.now() + TICK_INTERVAL_MS;
-  // Collect depleted tiles from gather events
-  const depletedTiles = allEvents
-    .filter(ev => ev.action === 'gather' && ev.depleted && ev.x !== undefined)
-    .map(ev => ({ x: ev.x, y: ev.y }));
-
-  broadcastEvent({
-    type: 'tick',
-    tick: tickNum,
-    dayPhase: dayPhase.name,
-    bots: botsResponded,
-    botsTotal: botsSent,
-    events: allEvents.length,
-    duration,
-    nextTickAt,
-    tickIntervalMs: TICK_INTERVAL_MS,
-    botStates: Object.fromEntries(
-      Object.entries(state.bots).map(([name, bs]) => [name, {
-        x: bs.x, y: bs.y, health: bs.health, hunger: bs.hunger, alive: bs.alive,
-        equipment: bs.equipment, inventory: bs.inventory,
-        displayName: displayNames[name] || name,
-        directive: bs.directive || null,
-      }])
-    ),
-    resourceChanges: (depletedTiles.length > 0 || respawnedCoords.length > 0)
-      ? { depleted: depletedTiles, respawned: respawnedCoords }
-      : undefined,
-  });
+  survivalFastTick(buildTickContext(Date.now()));
 }
 
 // --- Main tick ---
@@ -817,312 +497,13 @@ async function tick() {
 
   try {
     advanceClock();
-
+    const ctx = buildTickContext(tickStart);
     if (isGridGame) {
-      await survivalTick(tickStart);
-      return;
+      await survivalTick(ctx);
+    } else {
+      await socialTick(ctx);
     }
-
-    // --- Social tick (original logic) ---
-    const tickNum = state.clock.tick;
-    const vt = getVillageTime(gameConfig.timezone);
-    const phase = vt.phase;
-    state.clock.phase = phase;
-
-    // Build display name lookup from participants Map
-    const displayNames = {};
-    for (const [name, info] of participants) {
-      displayNames[name] = info.displayName;
-    }
-
-    // Read daily costs for all participants (cost cap enforcement)
-    // Skip remote bots — they use their own API keys
-    const dailyCosts = new Map();
-    for (const [botName, info] of participants) {
-      if (info.remote) continue;
-      dailyCosts.set(botName, await readBotDailyCost(botName));
-    }
-
-    // Read village memory summaries for all participants
-    // Skip remote bots — no local memory file
-    const VILLAGE_MEMORY_CAP = 1500;
-    const villageSummaries = new Map(); // botName → summary string
-    for (const [botName, info] of participants) {
-      if (info.remote) continue;
-      try {
-        const memPath = join(paths.memoryDir(botName), MEMORY_FILENAME);
-        const content = await readFile(memPath, 'utf-8');
-        // Extract "## Village History (summarized)" section
-        const start = content.indexOf('## Village History (summarized)');
-        if (start !== -1) {
-          const afterHeader = content.indexOf('\n', start);
-          const nextSection = content.indexOf('\n## ', afterHeader + 1);
-          const summaryText = nextSection !== -1
-            ? content.slice(afterHeader + 1, nextSection).trim()
-            : content.slice(afterHeader + 1).trim();
-          if (summaryText) {
-            villageSummaries.set(botName, summaryText.slice(0, VILLAGE_MEMORY_CAP));
-          }
-        }
-      } catch { /* no village.md or no summary yet */ }
-    }
-
-    // Build scenes and collect actions per location
-    const allEvents = new Map(); // location → events[]
-    const actionCounts = { say: 0, whisper: 0, observe: 0, move: 0 };
-    let botsSent = 0;
-    let botsResponded = 0;
-    let botsSkippedCost = 0;
-    let errors = 0;
-
-    // Roll village events and conversation spice for occupied locations
-    const activeEvents = new Map();  // location → event text
-    const activeSpice = new Map();   // location → spice text
-    for (const loc of gameConfig.locationSlugs) {
-      const botsAtLoc = state.locations[loc];
-      if (botsAtLoc.length === 0) continue;
-      const event = rollVillageEvent(tickNum, loc, state.eventState, gameConfig);
-      if (event) {
-        activeEvents.set(loc, event);
-        console.log(`[village] event at ${loc}: ${event}`);
-        broadcastEvent({ type: 'village_event', tick: tickNum, location: loc, locationName: gameConfig.locationNames[loc], text: event });
-      }
-      const spice = rollConversationSpice(tickNum, loc, botsAtLoc.length, state.spiceState, gameConfig);
-      if (spice) {
-        activeSpice.set(loc, spice);
-        console.log(`[village] spice at ${loc}: ${spice}`);
-        broadcastEvent({ type: 'conversation_spice', tick: tickNum, location: loc, locationName: gameConfig.locationNames[loc], text: spice });
-      }
-    }
-
-    // Build all scene requests across all locations from a single snapshot
-    const allSceneRequests = [];
-
-    for (const loc of gameConfig.locationSlugs) {
-      const botsAtLoc = [...state.locations[loc]];
-      allEvents.set(loc, []);
-
-      if (botsAtLoc.length === 0) {
-        state.emptyTicks[loc] = (state.emptyTicks[loc] || 0) + 1;
-        if (state.emptyTicks[loc] >= EMPTY_CLEAR_TICKS && state.publicLogs[loc].length > 0) {
-          state.publicLogs[loc] = [];
-        }
-        continue;
-      }
-
-      state.emptyTicks[loc] = 0;
-
-      if (state.publicLogs[loc].length > MAX_PUBLIC_LOG_DEPTH) {
-        state.publicLogs[loc] = state.publicLogs[loc].slice(-MAX_PUBLIC_LOG_DEPTH);
-      }
-
-      for (const botName of botsAtLoc) {
-        if (!participants.has(botName)) continue;
-
-        const pInfo = participants.get(botName);
-
-        // Skip cost cap for remote bots (they use their own API keys)
-        if (!pInfo.remote) {
-          const botCost = dailyCosts.get(botName) || 0;
-          if (VILLAGE_DAILY_COST_CAP > 0 && botCost >= VILLAGE_DAILY_COST_CAP) {
-            console.log(`[village] ${botName} skipped — daily cost $${botCost.toFixed(4)} exceeds cap $${VILLAGE_DAILY_COST_CAP}`);
-            botsSkippedCost++;
-            continue;
-          }
-        }
-        const othersHere = botsAtLoc.filter(b => b !== botName);
-        const pendingWhispers = state.whispers[botName] || [];
-        const conversationId = `village:${botName}`;
-
-        const canMove = (lastMoveTick.get(botName) || 0) < tickNum - 1;
-        const scene = buildScene({
-          botName,
-          botDisplayName: displayNames[botName],
-          location: loc,
-          phase,
-          tick: tickNum,
-          botsHere: othersHere,
-          botDisplayNames: displayNames,
-          publicLog: state.publicLogs[loc],
-          whispers: pendingWhispers,
-          movements: [],
-          sceneHistoryCap: SCENE_HISTORY_CAP,
-          relationships: state.relationships,
-          emotions: state.emotions,
-          canMove,
-          villageMemory: villageSummaries.get(botName) || '',
-          villageEvent: activeEvents.get(loc) || '',
-          conversationSpice: activeSpice.get(loc) || '',
-          gameConfig,
-        });
-
-        allSceneRequests.push({ botName, port: pInfo.port, remote: pInfo.remote, conversationId, scene, loc });
-      }
-    }
-
-    // Send all scenes across all locations in parallel
-    const allResults = await Promise.all(
-      allSceneRequests.map(async ({ botName, port, remote, conversationId, scene, loc }) => {
-        botsSent++;
-        const response = remote
-          ? await sendSceneRemote(botName, conversationId, scene)
-          : await sendScene(botName, port, conversationId, scene);
-        return { botName, response, loc };
-      })
-    );
-
-    // Accumulate village-specific costs from response usage data
-    for (const { botName, response } of allResults) {
-      accumulateResponseCost(botName, response);
-    }
-
-    // Process all responses after everyone has responded
-    for (const { botName, response, loc } of allResults) {
-      delete state.whispers[botName];
-
-      if (!response || !response.actions) {
-        errors++;
-        continue;
-      }
-
-      botsResponded++;
-      const events = processActions(botName, response.actions, loc, state, {
-        lastMoveTick, tick: tickNum, validLocations: gameConfig.locationSlugs,
-      });
-      allEvents.get(loc).push(...events);
-
-      for (const ev of events) {
-        if (actionCounts[ev.action] !== undefined) actionCounts[ev.action]++;
-      }
-
-      for (const ev of events) {
-        const extra = {};
-        if (ev.target) extra.targetDisplayName = displayNames[ev.target] || ev.target;
-        broadcastEvent({
-          type: 'action',
-          tick: tickNum,
-          phase,
-          location: loc,
-          locationName: gameConfig.locationNames[loc],
-          bot: botName,
-          displayName: displayNames[botName],
-          ...ev,
-          ...extra,
-        });
-      }
-    }
-
-    // Track relationships
-    trackInteractions(allEvents, state, displayNames);
-    updateCoLocation(state);
-    const relChanges = updateRelationships(state, displayNames, gameConfig);
-    for (const change of relChanges) {
-      broadcastEvent({
-        type: 'relationship',
-        tick: tickNum,
-        from: change.from,
-        to: change.to,
-        fromDisplay: change.fromDisplay,
-        toDisplay: change.toDisplay,
-        label: change.label,
-        prevLabel: change.prevLabel,
-      });
-      console.log(`[village] relationship: ${change.fromDisplay} & ${change.toDisplay} → ${change.label || '(none)'}`);
-    }
-
-    // Decay relationships for non-co-located pairs
-    decayRelationships(state, gameConfig);
-
-    // Track emotions (pass active events/spice for impulse triggers)
-    const emotionChanges = updateEmotions(state, allEvents, allResults, displayNames, { activeEvents, activeSpice }, gameConfig);
-    for (const change of emotionChanges) {
-      broadcastEvent({
-        type: 'emotion',
-        tick: tickNum,
-        bot: change.bot,
-        displayName: change.displayName,
-        emotion: change.emotion,
-        prevEmotion: change.prevEmotion,
-      });
-      console.log(`[village] emotion: ${change.displayName} → ${change.emotion}`);
-    }
-
-    // Write village memories per bot (skip remote — no local filesystem)
-    const timestamp = new Date().toISOString();
-    for (const [loc, events] of allEvents) {
-      if (events.length === 0) continue;
-
-      const botsAtLoc = state.locations[loc];
-      for (const botName of botsAtLoc) {
-        if (!participants.has(botName)) continue;
-        if (participants.get(botName).remote) continue;
-        try {
-          const entry = buildMemoryEntry({
-            location: gameConfig.locationNames[loc] || loc,
-            timestamp,
-            events,
-            botName,
-          });
-          if (entry.trim()) {
-            await appendVillageMemory(botName, entry);
-          }
-        } catch (err) {
-          console.error(`[village] Failed to write memory for ${botName}: ${err.message}`);
-        }
-      }
-    }
-
-    // Summarize oversized village.md files (skip remote — no local filesystem)
-    for (const [botName, info] of participants) {
-      if (info.remote) continue;
-      needsSummarization(botName).then(needed => {
-        if (needed) summarizeVillageMemory(botName);
-      }).catch(() => {});
-    }
-
-    // Persist state
-    await saveState();
-
-    // Conversation quality metrics (observability only — see ggbot.md 2A)
-    for (const loc of gameConfig.locationSlugs) {
-      const metrics = computeQualityMetrics(state.publicLogs[loc]);
-      if (!metrics) continue;
-      console.log(
-        `[village] metrics loc=${loc} messages=${metrics.messages} ` +
-        `wordEntropy=${metrics.wordEntropy.toFixed(2)} topicDiversity=${metrics.topicDiversity}`
-      );
-    }
-
-    // Tick summary
-    const duration = Math.round((Date.now() - tickStart) / 1000);
-    const actStr = Object.entries(actionCounts).map(([k, v]) => `${k}:${v}`).join(',');
-    const costStr = botsSkippedCost > 0 ? ` costSkipped=${botsSkippedCost}` : '';
-    console.log(
-      `[village] tick=${tickNum} phase=${phase} duration=${duration}s ` +
-      `bots=${botsResponded}/${botsSent} actions={${actStr}} errors=${errors}${costStr}`
-    );
-
-    // Broadcast tick summary to observers
-    nextTickAt = Date.now() + TICK_INTERVAL_MS;
-    broadcastEvent({
-      type: 'tick',
-      tick: tickNum,
-      phase,
-      villageTime: vt.timeStr,
-      bots: botsResponded,
-      botsTotal: botsSent,
-      actions: actionCounts,
-      duration,
-      nextTickAt,
-      tickIntervalMs: TICK_INTERVAL_MS,
-      locations: Object.fromEntries(
-        gameConfig.locationSlugs.map(l => [l, state.locations[l].map(b => ({
-          name: b, displayName: displayNames[b] || b,
-        }))])
-      ),
-      relationships: state.relationships,
-      emotions: state.emotions,
-    });
+    nextTickAt = ctx.nextTickAt;
   } catch (err) {
     console.error(`[village] Tick error: ${err.message}`);
   } finally {
@@ -1488,8 +869,7 @@ const server = createServer(async (req, res) => {
   // Serve static files
   if (path === '/' || path === '/index.html') {
     try {
-      const htmlFile = isGridGame ? 'survival.html' : 'index.html';
-      const html = await readFile(join(__dirname, 'public', htmlFile), 'utf-8');
+      const html = await readFile(join(__dirname, 'games', VILLAGE_GAME, 'observer.html'), 'utf-8');
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(html);
     } catch {

@@ -274,6 +274,7 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
 
   // == GUIDANCE ==
   lines.push(labels.guidanceHeader);
+  if (labels.behaviorGuidance) lines.push(labels.behaviorGuidance);
   lines.push('You are the General. Set strategic directives — your autopilot soldier executes them automatically.');
   lines.push('The soldier handles movement, pathfinding, gathering, eating, and combat between your turns.');
   lines.push('Focus on WHAT to do, not HOW. Change directive when your situation changes.');

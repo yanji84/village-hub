@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildSurvivalScene, getDayPhase, formatInventory, formatStats } from '../../survival-scene.js';
+import { buildSurvivalScene, getDayPhase, formatInventory, formatStats } from '../../games/survival/scene.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const schema = JSON.parse(readFileSync(join(__dirname, '../../games/survival.json'), 'utf-8'));
+const schema = JSON.parse(readFileSync(join(__dirname, '../../games/survival/schema.json'), 'utf-8'));
 const gameConfig = { raw: schema, isGridGame: true };
 
 describe('getDayPhase', () => {

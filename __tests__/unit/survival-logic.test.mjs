@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
   processActions, resolveCombat, tickSurvival, handleDeath,
   doMove, doGather, doCraft, doEat, doAttack, doScout,
-} from '../../survival-logic.js';
+} from '../../games/survival/logic.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mulberry32 } from '../../world.js';
+import { mulberry32 } from '../../games/survival/world.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const schema = JSON.parse(readFileSync(join(__dirname, '../../games/survival.json'), 'utf-8'));
+const schema = JSON.parse(readFileSync(join(__dirname, '../../games/survival/schema.json'), 'utf-8'));
 
 // Override world size to 10x10 for test convenience
 const testWidth = 10;

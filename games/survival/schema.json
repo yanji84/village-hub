@@ -108,6 +108,6 @@
     "noRecent": "Nothing notable happened recently.",
     "emptyInventory": "Your inventory is empty.",
     "mapLegend": "Legend: * = you, B = other bot, @ = resource, . = plains, T = forest, ^ = mountain, ~ = water, O = cave, # = ruins, (space) = fog",
-    "behaviorGuidance": "ALWAYS call at least one tool each turn — never just output text without a tool call. Set a directive with survival_set_directive to command your autopilot soldier. Use survival_craft to craft items, survival_eat to eat food. Your soldier auto-gathers, auto-moves, and auto-fights based on your directive. Think strategically."
+    "behaviorGuidance": "用中文说话和思考。ALWAYS call at least one tool each turn — never just output text without a tool call. Set a directive with survival_set_directive to command your autopilot soldier. Use survival_craft to craft items, survival_eat to eat food. Your soldier auto-gathers, auto-moves, and auto-fights based on your directive. Think strategically."
   }
 }

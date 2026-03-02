@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { computeVisibility, getVisibleTiles, buildAsciiMap } from '../../visibility.js';
+import { computeVisibility, getVisibleTiles, buildAsciiMap } from '../../games/survival/visibility.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const schema = JSON.parse(readFileSync(join(__dirname, '../../games/survival.json'), 'utf-8'));
+const schema = JSON.parse(readFileSync(join(__dirname, '../../games/survival/schema.json'), 'utf-8'));
 
 // Override world size to 8x8 for test convenience
 const smallWidth = 8;

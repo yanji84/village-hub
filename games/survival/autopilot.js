@@ -14,7 +14,7 @@ import {
   doEat,
   doAttack,
   resolveCombat,
-} from './survival-logic.js';
+} from './logic.js';
 
 // --- Direction helpers ---
 
