@@ -327,6 +327,14 @@ let botPixiObjects = {};
 let waterShimmers = [];
 const charTextureCache = {};
 
+// ========== VISUAL POLISH STATE ==========
+let shakeTimer = 0;
+let shakeIntensity = 0;
+let zoom = 1.0;
+let targetZoom = 1.0;
+let cameraTargetX = 0;
+let cameraTargetY = 0;
+
 // ========== HELPERS ==========
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -923,10 +931,8 @@ function getOrCreateBotVisuals(botId) {
   const color = getBotColor(botId);
   const container = new PIXI.Container();
 
-  // Selection ring
+  // Selection ring (redrawn each frame for pulsing glow)
   const ring = new PIXI.Graphics();
-  ring.circle(TILE / 2, TILE / 2, TILE * 0.65);
-  ring.stroke({ color: 0xffffff, width: Math.max(1, TILE / 8), alpha: 0.8 });
   ring.visible = false;
   ring.zIndex = 0;
 
@@ -1009,9 +1015,10 @@ function getOrCreateBotVisuals(botId) {
   thinkDot.zIndex = 6;
 
   container.addChild(ring, body, deathX, hpBg, hpFill, nameText, dirText, thinkDot);
+  container.scale.set(0);
   botLayer.addChild(container);
 
-  const obj = { container, ring, body, deathX, hpBg, hpFill, nameText, dirText, thinkDot };
+  const obj = { container, ring, body, deathX, hpBg, hpFill, nameText, dirText, thinkDot, _displayedHp: -1, _spawnTimer: 15, _deathTimer: 0 };
   botPixiObjects[botId] = obj;
   return obj;
 }
@@ -1027,22 +1034,61 @@ function updateBotVisuals(botId, bot) {
   const ry = bot.renderY !== undefined ? bot.renderY : bot.y;
   v.container.position.set(rx * TILE, ry * TILE);
 
-  // Selection ring
-  v.ring.visible = isSelected;
-  if (isSelected) {
-    v.ring.alpha = Math.sin(frame * 0.08) * 0.3 + 0.7;
+  // Spawn animation
+  if (v._spawnTimer > 0) {
+    if (!alive) {
+      v._spawnTimer = 0;
+      v.container.scale.set(1);
+    } else {
+      v._spawnTimer--;
+      const t = 1 - v._spawnTimer / 15;
+      const scale = t < 0.7 ? t / 0.7 * 1.1 : 1.1 - (t - 0.7) / 0.3 * 0.1;
+      v.container.scale.set(scale);
+    }
   }
 
-  // Alive/dead toggle
-  v.body.visible = alive;
-  v.deathX.visible = !alive;
+  // Selection ring — pulsing concentric glow
+  v.ring.visible = isSelected;
+  if (isSelected) {
+    v.ring.clear();
+    const pulse = Math.sin(frame * 0.08) * 0.15 + 0.85;
+    for (let i = 0; i < 3; i++) {
+      const r = TILE * (0.65 + i * 0.15);
+      const a = (0.6 - i * 0.2) * pulse;
+      v.ring.circle(TILE / 2, TILE / 2, r);
+      v.ring.stroke({ color: 0xffffff, width: Math.max(1, TILE / 10), alpha: a });
+    }
+  }
+
+  // Alive/dead toggle with death animation
+  if (!alive && v._deathTimer === 0 && v.body.visible && v.body.alpha > 0.5) {
+    v._deathTimer = 20;
+  }
+  if (v._deathTimer > 0) {
+    v._deathTimer--;
+    const t = v._deathTimer / 20;
+    v.body.alpha = t;
+    v.deathX.alpha = 1 - t;
+    v.body.visible = true;
+    v.deathX.visible = true;
+  } else {
+    v.body.visible = alive;
+    v.body.alpha = alive ? 1 : 0;
+    v.deathX.visible = !alive;
+    v.deathX.alpha = !alive ? 1 : 0;
+  }
   v.hpBg.visible = alive;
   v.hpFill.visible = alive;
 
   if (alive) {
-    // Detect damage → trigger hurt animation
+    // Detect damage → trigger hurt animation + floating number
     if (v.body._prevHealth >= 0 && bot.health < v.body._prevHealth) {
-      v.body._hurtTimer = 24; // flash for ~24 frames
+      v.body._hurtTimer = 24;
+      const dmg = v.body._prevHealth - bot.health;
+      if (typeof spawnFloatingText === 'function') spawnFloatingText(rx * TILE + TILE / 2, ry * TILE - TILE / 2, '-' + dmg, 0xff4444);
+    } else if (v.body._prevHealth >= 0 && bot.health > v.body._prevHealth) {
+      const heal = bot.health - v.body._prevHealth;
+      if (typeof spawnFloatingText === 'function') spawnFloatingText(rx * TILE + TILE / 2, ry * TILE - TILE / 2, '+' + heal, 0x4caf50);
     }
     v.body._prevHealth = bot.health;
     if (v.body._hurtTimer > 0) v.body._hurtTimer--;
@@ -1086,15 +1132,17 @@ function updateBotVisuals(botId, bot) {
     }
     v.body.texture = v.body._anims[v.body._pose][v.body._frameIdx];
 
-    // HP bar fill
+    // HP bar fill (smooth lerp)
     const maxHp = bot.maxHealth || 100;
     const hpRatio = Math.max(0, (bot.health || 0) / maxHp);
+    if (v._displayedHp < 0) v._displayedHp = hpRatio;
+    v._displayedHp += (hpRatio - v._displayedHp) * 0.1;
     const barH = Math.max(2, Math.round(TILE / 8));
     const barY = -barH - 1;
     v.hpFill.clear();
-    if (hpRatio > 0) {
-      const hpColor = hpRatio > 0.5 ? 0x4caf50 : hpRatio > 0.25 ? 0xff9800 : 0xf44336;
-      v.hpFill.rect(0, barY, TILE * hpRatio, barH);
+    if (v._displayedHp > 0.001) {
+      const hpColor = v._displayedHp > 0.5 ? 0x4caf50 : v._displayedHp > 0.25 ? 0xff9800 : 0xf44336;
+      v.hpFill.rect(0, barY, TILE * v._displayedHp, barH);
       v.hpFill.fill(hpColor);
     }
   }
@@ -1151,6 +1199,16 @@ function resetPixiWorld() {
   waterShimmers = [];
   effectsLayer.removeChildren();
 
+  // Re-add visual effects systems
+  if (typeof particleGfx !== 'undefined') {
+    effectsLayer.addChild(particleGfx);
+    particleGfx.clear();
+    for (const p of particles) p.active = false;
+  }
+  if (typeof floatingTexts !== 'undefined') {
+    for (const ft of floatingTexts) { ft.visible = false; ft._life = 0; effectsLayer.addChild(ft); }
+  }
+
   // Clear texture caches (TILE may have changed)
   for (const key of Object.keys(charTextureCache)) {
     const anims = charTextureCache[key];
@@ -1165,6 +1223,100 @@ function resetPixiWorld() {
   }
 }
 
+// ========== PARTICLE SYSTEM ==========
+const particles = [];
+const PARTICLE_POOL_SIZE = 200;
+for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+  particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0, color: 0xffffff, size: 2, gravity: 0 });
+}
+const particleGfx = new PIXI.Graphics();
+effectsLayer.addChild(particleGfx);
+
+function emitParticles(worldX, worldY, count, config) {
+  const { colors, speedMin = 0.3, speedMax = 1.5, sizeMin = 1, sizeMax = 3, lifeMin = 20, lifeMax = 40, gravity = 0.03, spread = Math.PI * 2 } = config;
+  let spawned = 0;
+  for (const p of particles) {
+    if (spawned >= count) break;
+    if (p.active) continue;
+    const angle = Math.random() * spread - spread / 2 + (config.baseAngle || -Math.PI / 2);
+    const speed = speedMin + Math.random() * (speedMax - speedMin);
+    p.x = worldX + (Math.random() - 0.5) * 4;
+    p.y = worldY + (Math.random() - 0.5) * 4;
+    p.vx = Math.cos(angle) * speed;
+    p.vy = Math.sin(angle) * speed;
+    p.gravity = gravity;
+    p.life = lifeMin + Math.random() * (lifeMax - lifeMin);
+    p.maxLife = p.life;
+    p.color = colors[Math.floor(Math.random() * colors.length)];
+    p.size = sizeMin + Math.random() * (sizeMax - sizeMin);
+    p.active = true;
+    spawned++;
+  }
+}
+
+function updateParticles() {
+  particleGfx.clear();
+  for (const p of particles) {
+    if (!p.active) continue;
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += p.gravity;
+    p.life--;
+    if (p.life <= 0) { p.active = false; continue; }
+    const alpha = Math.min(1, p.life / p.maxLife * 2);
+    const s = p.size * (0.5 + 0.5 * p.life / p.maxLife);
+    particleGfx.rect(p.x - s / 2, p.y - s / 2, s, s);
+    particleGfx.fill({ color: p.color, alpha });
+  }
+}
+
+// ========== FLOATING DAMAGE/HEAL NUMBERS ==========
+const floatingTexts = [];
+const FLOAT_TEXT_POOL_SIZE = 12;
+for (let i = 0; i < FLOAT_TEXT_POOL_SIZE; i++) {
+  const textRes = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+  const ft = new PIXI.Text({ text: '', style: { fontFamily: 'Courier New', fontSize: 10, fontWeight: 'bold', fill: 0xff4444, stroke: { color: 0x000000, width: 3 } }, resolution: textRes });
+  ft.anchor.set(0.5, 0.5);
+  ft.visible = false;
+  ft._life = 0;
+  ft._maxLife = 0;
+  ft._vy = 0;
+  effectsLayer.addChild(ft);
+  floatingTexts.push(ft);
+}
+
+function spawnFloatingText(worldX, worldY, text, color) {
+  for (const ft of floatingTexts) {
+    if (ft.visible) continue;
+    ft.text = text;
+    ft.style.fill = color;
+    ft.position.set(worldX, worldY);
+    ft._vy = -0.6;
+    ft._life = 40;
+    ft._maxLife = 40;
+    ft.alpha = 1;
+    ft.visible = true;
+    return;
+  }
+}
+
+function updateFloatingTexts() {
+  for (const ft of floatingTexts) {
+    if (!ft.visible) continue;
+    ft.position.y += ft._vy;
+    ft._vy *= 0.97;
+    ft._life--;
+    ft.alpha = Math.max(0, ft._life / ft._maxLife);
+    if (ft._life <= 0) ft.visible = false;
+  }
+}
+
+// ========== SCREEN SHAKE ==========
+function triggerShake(intensity, duration) {
+  shakeIntensity = intensity;
+  shakeTimer = duration;
+}
+
 // ========== DAY/NIGHT TINT ==========
 function applyDayNightTint() {
   dayNightOverlay.clear();
@@ -1177,8 +1329,16 @@ function applyDayNightTint() {
   }
   if (!tint || tint.a === 0) return;
   const color = (tint.r << 16) | (tint.g << 8) | tint.b;
-  dayNightOverlay.rect(0, 0, CW, CH);
-  dayNightOverlay.fill({ color: color, alpha: tint.a });
+  // Radial vignette: concentric rects, edges darkest, center nearly clear
+  const rings = 6;
+  const layerAlpha = tint.a * 1.5 / rings;
+  for (let i = 0; i < rings; i++) {
+    const t = i / rings;
+    const mx = CW * 0.4 * t;
+    const my = CH * 0.4 * t;
+    dayNightOverlay.rect(mx, my, CW - mx * 2, CH - my * 2);
+    dayNightOverlay.fill({ color, alpha: layerAlpha });
+  }
 }
 
 // ========== POSITION INTERPOLATION ==========
@@ -1204,16 +1364,21 @@ function updateCamera() {
     const bot = bots[selectedBot];
     const rx = bot.renderX !== undefined ? bot.renderX : bot.x;
     const ry = bot.renderY !== undefined ? bot.renderY : bot.y;
-    cameraX = rx * TILE + TILE / 2 - CW / 2;
-    cameraY = ry * TILE + TILE / 2 - CH / 2;
+    cameraTargetX = rx * TILE + TILE / 2 - CW / (2 * zoom);
+    cameraTargetY = ry * TILE + TILE / 2 - CH / (2 * zoom);
+    // Smooth easing toward target
+    cameraX += (cameraTargetX - cameraX) * 0.08;
+    cameraY += (cameraTargetY - cameraY) * 0.08;
     clampCamera();
   }
   worldContainer.position.set(-cameraX, -cameraY);
 }
 
 function clampCamera() {
-  const maxX = worldW * TILE - CW;
-  const maxY = worldH * TILE - CH;
+  const viewW = CW / zoom;
+  const viewH = CH / zoom;
+  const maxX = worldW * TILE - viewW;
+  const maxY = worldH * TILE - viewH;
   cameraX = Math.max(0, Math.min(cameraX, maxX));
   cameraY = Math.max(0, Math.min(cameraY, maxY));
 }
@@ -1221,6 +1386,10 @@ function clampCamera() {
 // ========== GAME LOOP (PIXI Ticker) ==========
 app.ticker.add(() => {
   frame++;
+
+  // Smooth zoom
+  zoom += (targetZoom - zoom) * 0.12;
+  worldContainer.scale.set(zoom);
 
   // Interpolate bot positions
   lerpBots();
@@ -1233,6 +1402,12 @@ app.ticker.add(() => {
     const v = botPixiObjects[bot._id];
     if (v) v.container.zIndex = zIdx++;
   }
+
+  // Particles
+  updateParticles();
+
+  // Floating texts
+  updateFloatingTexts();
 
   // Animated water shimmer
   for (const s of waterShimmers) {
@@ -1251,6 +1426,16 @@ app.ticker.add(() => {
 
   // Camera
   updateCamera();
+
+  // Screen shake (applied after camera)
+  if (shakeTimer > 0) {
+    const decay = shakeTimer / 15;
+    const sx = (Math.random() - 0.5) * shakeIntensity * decay * 2;
+    const sy = (Math.random() - 0.5) * shakeIntensity * decay * 2;
+    worldContainer.position.x += sx;
+    worldContainer.position.y += sy;
+    shakeTimer--;
+  }
 
   // Speech bubbles
   positionSpeechBubbles();
@@ -1570,8 +1755,8 @@ function positionSpeechBubbles() {
     if (!bot) continue;
     const rx = bot.renderX !== undefined ? bot.renderX : bot.x;
     const ry = bot.renderY !== undefined ? bot.renderY : bot.y;
-    const screenX = (rx * TILE - cameraX) * sx + ox;
-    const screenY = ((ry * TILE - cameraY) - TILE) * sy + oy;
+    const screenX = (rx * TILE - cameraX) * zoom * sx + ox;
+    const screenY = ((ry * TILE - cameraY) - TILE) * zoom * sy + oy;
     b.el.style.left = screenX + 'px';
     b.el.style.top = screenY + 'px';
   }
@@ -1635,7 +1820,8 @@ function formatNarrativeEvent(d) {
 
     case 'directive': {
       const emoji = INTENT_EMOJI[d.intent] || '\ud83d\udd0d';
-      return { target: 'activity', html: `${emoji} ${name} \u2192 ${esc(d.intent || '?')}${d.target ? ' ' + esc(d.target) : ''}`, cssClass: 'directive-entry' };
+      const strategyHtml = d.strategy ? `<br><span style="color:#ff9800;font-style:italic;font-size:10px">\ud83e\udde0 ${esc(d.strategy)}</span>` : '';
+      return { target: 'activity', html: `${emoji} ${name} \u2192 ${esc(d.intent || '?')}${d.target ? ' ' + esc(d.target) : ''}${strategyHtml}`, cssClass: 'directive-entry' };
     }
 
     case 'equip':
@@ -1749,8 +1935,8 @@ function canvasToGrid(clientX, clientY) {
   const rect = cv.getBoundingClientRect();
   const scaleX = CW / rect.width;
   const scaleY = CH / rect.height;
-  const cx = (clientX - rect.left) * scaleX + cameraX;
-  const cy = (clientY - rect.top) * scaleY + cameraY;
+  const cx = (clientX - rect.left) * scaleX / zoom + cameraX;
+  const cy = (clientY - rect.top) * scaleY / zoom + cameraY;
   return {
     gx: Math.floor(cx / TILE),
     gy: Math.floor(cy / TILE),
@@ -1787,12 +1973,14 @@ cv.addEventListener('mousedown', (e) => {
 cv.addEventListener('mousemove', (e) => {
   if (dragging) {
     const rect = cv.getBoundingClientRect();
-    const scaleX = CW / rect.width;
-    const scaleY = CH / rect.height;
+    const scaleX = CW / rect.width / zoom;
+    const scaleY = CH / rect.height / zoom;
     const dx = (e.clientX - dragStartX) * scaleX;
     const dy = (e.clientY - dragStartY) * scaleY;
     cameraX = dragCamStartX - dx;
     cameraY = dragCamStartY - dy;
+    cameraTargetX = cameraX;
+    cameraTargetY = cameraY;
     clampCamera();
     if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
       autoFollow = false;
@@ -1843,6 +2031,13 @@ cv.addEventListener('mouseleave', () => {
   dragging = false;
   document.getElementById('tooltip').style.display = 'none';
 });
+
+// Mousewheel zoom
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const delta = -Math.sign(e.deltaY) * 0.15;
+  targetZoom = Math.max(0.5, Math.min(3.0, targetZoom + delta));
+}, { passive: false });
 
 document.getElementById('follow-toggle').addEventListener('change', (e) => {
   autoFollow = e.target.checked;
@@ -2000,6 +2195,28 @@ function processSurvivalEvent(d) {
   }
 
   routeNarrativeEvent(d);
+
+  // Particle effects
+  if (d.bot && bots[d.bot]) {
+    const b = bots[d.bot];
+    const px = (b.renderX !== undefined ? b.renderX : b.x) * TILE + TILE / 2;
+    const py = (b.renderY !== undefined ? b.renderY : b.y) * TILE + TILE / 2;
+    if (d.action === 'attack') {
+      const target = d.target && bots[d.target];
+      const tx = target ? (target.renderX !== undefined ? target.renderX : target.x) * TILE + TILE / 2 : px;
+      const ty = target ? (target.renderY !== undefined ? target.renderY : target.y) * TILE + TILE / 2 : py;
+      emitParticles(tx, ty, 10, { colors: [0xff6600, 0xff3300, 0xffaa00, 0xff0000], speedMin: 0.5, speedMax: 2.0, lifeMin: 15, lifeMax: 30 });
+    } else if (d.action === 'die' || d.action === 'death') {
+      emitParticles(px, py, 18, { colors: [0xffffff, 0xcccccc, 0x999999, 0xaaaaaa], speedMin: 0.5, speedMax: 2.5, sizeMin: 1, sizeMax: 4, lifeMin: 25, lifeMax: 45 });
+      triggerShake(3, 15);
+    } else if (d.action === 'gather') {
+      emitParticles(px, py, 6, { colors: [0xfdd835, 0xffe082, 0xffcc00], speedMin: 0.2, speedMax: 0.8, lifeMin: 20, lifeMax: 35, gravity: -0.02, baseAngle: -Math.PI / 2, spread: Math.PI / 3 });
+    } else if (d.action === 'craft') {
+      emitParticles(px, py, 8, { colors: [0x42a5f5, 0x64b5f6, 0x1e88e5, 0x90caf9], speedMin: 0.3, speedMax: 1.2, lifeMin: 20, lifeMax: 35, gravity: -0.03, baseAngle: -Math.PI / 2, spread: Math.PI / 2 });
+    } else if (d.action === 'eat' || d.action === 'heal') {
+      emitParticles(px, py, 4, { colors: [0x4caf50, 0x66bb6a, 0x81c784], speedMin: 0.2, speedMax: 0.6, lifeMin: 25, lifeMax: 40, gravity: -0.04, baseAngle: -Math.PI / 2, spread: Math.PI / 4 });
+    }
+  }
 
   renderBotInfo();
   renderBotList();

@@ -401,6 +401,7 @@ export function applyDirective(botName, botState, params) {
     bot: botName,
     intent,
     target: params.target || null,
+    strategy: botState.directive.strategy || null,
     x: botState.x,
     y: botState.y,
   }];

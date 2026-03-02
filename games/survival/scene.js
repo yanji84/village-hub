@@ -350,13 +350,12 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
     }
   }
 
-  lines.push('  survival_say { message: "..." } — Say something to all survivors');
+  lines.push('  survival_say { message: "..." } — Speak to other bots (ALL bots hear this)');
   if (gameConfig.raw.diplomacy) {
-    lines.push('    Alliance commands (via say):');
-    lines.push('      "PROPOSE ALLIANCE <name>" — Propose alliance');
-    lines.push('      "ACCEPT ALLIANCE <name>" — Accept a proposal');
-    lines.push('      "BREAK ALLIANCE <name>" — End alliance');
-    lines.push('    Free-form messages have no mechanical effect — use them to negotiate, lie, or deceive.');
+    lines.push('    USE SAY FOR: diplomacy, threats, lies, coordination, alliance commands.');
+    lines.push('    DO NOT narrate scores or your own status — you already see the scoreboard.');
+    lines.push('    Alliance commands: "PROPOSE ALLIANCE <name>", "ACCEPT ALLIANCE <name>", "BREAK ALLIANCE <name>"');
+    lines.push('    Other messages: negotiate, threaten, deceive, coordinate — talk TO other bots, not to yourself.');
   }
   lines.push('');
 
@@ -365,13 +364,19 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
   if (labels.behaviorGuidance) lines.push(labels.behaviorGuidance);
   if (gameConfig.raw.diplomacy) {
     lines.push('This is a game of STRATEGY and DECEPTION, like the Three Kingdoms (三国).');
-    lines.push('Form alliances: say "PROPOSE ALLIANCE <name>". They must say "ACCEPT ALLIANCE <yourName>" to confirm.');
-    lines.push('Allies earn +1 point/tick when nearby. Break alliance: say "BREAK ALLIANCE <name>".');
-    lines.push('BETRAYAL: Killing your ally earns +30 BONUS points on top of the +50 kill reward.');
-    lines.push('BOUNTY: The score leader has a bounty — killing them earns +25 bonus points.');
-    lines.push('You can say ANYTHING — promise peace then attack, fake weakness, spread lies about others.');
-    lines.push('Other bots CANNOT see your directive. Use this to deceive.');
-    lines.push('Trust actions, not words. Think like Zhuge Liang — the best victory is won before the battle.');
+    lines.push('ALLIANCES: say "PROPOSE ALLIANCE <name>" / "ACCEPT ALLIANCE <name>" / "BREAK ALLIANCE <name>".');
+    lines.push('Allies earn +1/tick when nearby. BETRAYAL kill = +80 pts (kill + bonus). BOUNTY kill = +75 pts.');
+    lines.push('DECEPTION: Other bots CANNOT see your directive. Say one thing, do another.');
+    lines.push('Lie, fake weakness, spread rumors, promise peace then attack — all fair game.');
+    lines.push('Think like Zhuge Liang (诸葛亮) — the best victory is won before the battle.');
+    lines.push('');
+    lines.push('COMMUNICATION RULES:');
+    lines.push('  - survival_say is for talking TO other bots — diplomacy, threats, lies, deals.');
+    lines.push('  - DO NOT narrate scores, stats, or play-by-play. You already see the scoreboard.');
+    lines.push('  - Put your private thinking in the strategy field, not in say messages.');
+    lines.push('  - Example good say: "wise-koala, let\'s attack jinbot together — split the bounty!"');
+    lines.push('  - Example good say: "I have no weapons, I\'m harmless..." (while secretly hunting)');
+    lines.push('  - Example bad say: "289分第一名！饥饿76%！" (this is useless narration)');
   } else if (gameConfig.raw.scoring) {
     lines.push('This is a COMPETITION. The bot with the most points at round end wins.');
     lines.push('Kills are worth 50 points — hunting other bots is the fastest way to score.');
