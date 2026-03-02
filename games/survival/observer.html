@@ -97,6 +97,20 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
 #controls label{font-size:10px;color:#555;cursor:pointer;user-select:none}
 #controls input[type=checkbox]{margin-right:3px}
 
+/* Diplomacy panel */
+#diplomacy-panel{padding:4px 10px;border-bottom:1px solid #1a1a1a;flex-shrink:0;max-height:80px;overflow-y:auto}
+#diplomacy-panel h4{font-size:10px;color:#555;margin-bottom:2px;text-transform:uppercase;letter-spacing:1px}
+.dip-entry{font-size:10px;line-height:1.4;padding:1px 0}
+.dip-alliance{color:#4fc3f7}
+.dip-proposal{color:#888;font-style:italic}
+.dip-betrayal{color:#ff5722;font-weight:700}
+.dip-deception{color:#ff9800;font-style:italic}
+.bounty-crown{color:#fdd835}
+.act-entry.alliance{color:#4fc3f7;border-left-color:#29b6f6}
+.act-entry.betrayal{color:#ff5722;font-weight:700;border-left-color:#ff5722;background:rgba(255,87,34,.08)}
+.act-entry.bounty{color:#fdd835;border-left-color:#fdd835}
+.act-entry.deception{color:#ff9800;border-left-color:#ff9800;font-style:italic}
+
 /* Scoreboard panel */
 #scoreboard{padding:4px 10px;border-bottom:1px solid #1a1a1a;flex-shrink:0;max-height:120px;overflow-y:auto}
 #scoreboard h4{font-size:10px;color:#555;margin-bottom:2px;text-transform:uppercase;letter-spacing:1px}
@@ -166,6 +180,10 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
         <div id="scoreboard">
           <h4>Scoreboard</h4>
           <div id="scoreboard-body"></div>
+        </div>
+        <div id="diplomacy-panel">
+          <h4>Diplomacy (God View)</h4>
+          <div id="diplomacy-body"></div>
         </div>
         <div id="status-strip"></div>
         <div id="chat-wrap">
@@ -271,6 +289,10 @@ let roundNumber = 0;
 let roundTicksRemaining = 0;
 let roundScores = {};
 let roundOverlayTimer = null;
+let dipAlliances = {};
+let dipProposals = {};
+let dipBetrayals = [];
+let bountyBot = null;
 
 // ========== HELPERS ==========
 function esc(s) {
@@ -437,15 +459,16 @@ function drawBot(bot, bx, by) {
     cx.fillRect(barX, barY, barW * hpRatio, barH);
   }
 
-  // Name label
-  const name = bot.displayName || bot._id;
+  // Name label + bounty crown
+  const isBounty = bountyBot === bot._id;
+  const name = (isBounty ? '\ud83d\udc51 ' : '') + (bot.displayName || bot._id);
   const fontSize = Math.max(5, Math.round(5*s));
   cx.font = fontSize + 'px Courier New';
   cx.textAlign = 'center';
   const tw = cx.measureText(name).width;
   cx.fillStyle = 'rgba(0,0,0,0.6)';
   cx.fillRect(px - tw / 2 - 1, py + 5*s, tw + 2, fontSize + 2);
-  cx.fillStyle = isSelected ? '#fff' : '#ccc';
+  cx.fillStyle = isBounty ? '#fdd835' : isSelected ? '#fff' : '#ccc';
   cx.fillText(name, px, py + 5*s + fontSize);
 
   // Directive label (small text above HP bar)
@@ -571,6 +594,42 @@ function render() {
         }
       }
     }
+  }
+
+  // Alliance lines between allied bots
+  for (const [key] of Object.entries(dipAlliances)) {
+    const [a, b] = key.split(':');
+    const botA = bots[a], botB = bots[b];
+    if (!botA || !botB) continue;
+    const ax = (botA.renderX !== undefined ? botA.renderX : botA.x) * TILE + TILE / 2 - cameraX;
+    const ay = (botA.renderY !== undefined ? botA.renderY : botA.y) * TILE + TILE / 2 - cameraY;
+    const bx = (botB.renderX !== undefined ? botB.renderX : botB.x) * TILE + TILE / 2 - cameraX;
+    const by = (botB.renderY !== undefined ? botB.renderY : botB.y) * TILE + TILE / 2 - cameraY;
+    cx.strokeStyle = 'rgba(79,195,247,0.5)';
+    cx.lineWidth = Math.max(1, TILE / 8);
+    cx.setLineDash([]);
+    cx.beginPath();
+    cx.moveTo(ax, ay);
+    cx.lineTo(bx, by);
+    cx.stroke();
+  }
+  // Proposal dashed lines
+  for (const [key] of Object.entries(dipProposals)) {
+    const [a, b] = key.split('\u2192');
+    const botA = bots[a], botB = bots[b];
+    if (!botA || !botB) continue;
+    const ax = (botA.renderX !== undefined ? botA.renderX : botA.x) * TILE + TILE / 2 - cameraX;
+    const ay = (botA.renderY !== undefined ? botA.renderY : botA.y) * TILE + TILE / 2 - cameraY;
+    const bx = (botB.renderX !== undefined ? botB.renderX : botB.x) * TILE + TILE / 2 - cameraX;
+    const by = (botB.renderY !== undefined ? botB.renderY : botB.y) * TILE + TILE / 2 - cameraY;
+    cx.strokeStyle = 'rgba(150,150,150,0.3)';
+    cx.lineWidth = Math.max(1, TILE / 8);
+    cx.setLineDash([3, 3]);
+    cx.beginPath();
+    cx.moveTo(ax, ay);
+    cx.lineTo(bx, by);
+    cx.stroke();
+    cx.setLineDash([]);
   }
 
   // Day/night tint
@@ -757,6 +816,68 @@ function renderScoreboard() {
   el.innerHTML = html;
 }
 
+function renderDiplomacyPanel() {
+  const el = document.getElementById('diplomacy-body');
+  const parts = [];
+
+  // Alliances
+  for (const [key, alliance] of Object.entries(dipAlliances)) {
+    const [a, b] = key.split(':');
+    const nameA = bots[a]?.displayName || a;
+    const nameB = bots[b]?.displayName || b;
+    const colorA = getBotColor(a);
+    const colorB = getBotColor(b);
+    parts.push(`<div class="dip-entry dip-alliance">\u2694\ufe0f <span style="color:${colorA}">${esc(nameA)}</span> \u2194 <span style="color:${colorB}">${esc(nameB)}</span> (tick ${alliance.formedAt})</div>`);
+  }
+
+  // Proposals
+  for (const [key, proposal] of Object.entries(dipProposals)) {
+    const [from, to] = key.split('\u2192');
+    const nameFrom = bots[from]?.displayName || from;
+    const nameTo = bots[to]?.displayName || to;
+    parts.push(`<div class="dip-entry dip-proposal">\u23f3 ${esc(nameFrom)} \u2192 ${esc(nameTo)} (pending)</div>`);
+  }
+
+  // Betrayals
+  for (const b of dipBetrayals.slice(-5)) {
+    const name = bots[b.betrayer]?.displayName || b.betrayer;
+    const victim = bots[b.victim]?.displayName || b.victim;
+    parts.push(`<div class="dip-entry dip-betrayal">\ud83d\udde1\ufe0f ${esc(name)} betrayed ${esc(victim)} (tick ${b.tick})</div>`);
+  }
+
+  // Bounty
+  if (bountyBot && bots[bountyBot]) {
+    const name = bots[bountyBot]?.displayName || bountyBot;
+    parts.push(`<div class="dip-entry"><span class="bounty-crown">\ud83d\udc51</span> Bounty on <b>${esc(name)}</b></div>`);
+  }
+
+  if (parts.length === 0) {
+    parts.push('<div class="dip-entry" style="color:#444;font-style:italic">No diplomatic activity yet</div>');
+  }
+  el.innerHTML = parts.join('');
+}
+
+// Deception detection: compare bot's say message to their directive (observer-only)
+function detectDeception(botId, message) {
+  const bot = bots[botId];
+  if (!bot || !bot.directive) return null;
+  const msg = (message || '').toUpperCase();
+  const intent = bot.directive.intent;
+  const target = bot.directive.target;
+
+  // Bot proposes/accepts alliance with X but is hunting X
+  if (intent === 'hunt' && target) {
+    if (msg.includes('ALLIANCE') && msg.includes(target.toUpperCase())) {
+      return `directive: hunt ${target}`;
+    }
+    // Bot says peaceful things but is hunting
+    if (msg.includes('PEACE') || msg.includes('FRIEND') || msg.includes('WON\'T ATTACK') || msg.includes('TRUST')) {
+      return `directive: hunt ${target}`;
+    }
+  }
+  return null;
+}
+
 function showRoundEndOverlay(d) {
   const overlay = document.getElementById('round-overlay');
   const card = document.getElementById('ro-card');
@@ -857,12 +978,15 @@ function formatNarrativeEvent(d) {
     case 'move':
       return { target: 'skip' };
 
-    case 'say':
+    case 'say': {
+      const deception = d.bot ? detectDeception(d.bot, d.message) : null;
+      const deceptionTag = deception ? ` <span class="dip-deception">\ud83c\udfad DECEPTION (${esc(deception)})</span>` : '';
       return {
         target: 'chat',
-        html: `<span class="chat-time">${time}</span><span class="chat-name">${name}</span> ${esc(d.message || '')}`,
+        html: `<span class="chat-time">${time}</span><span class="chat-name">${name}</span> ${esc(d.message || '')}${deceptionTag}`,
         color: getBotColor(d.bot),
       };
+    }
 
     case 'gather': {
       const items = d.items
@@ -921,7 +1045,23 @@ function formatNarrativeEvent(d) {
 
     case 'explore':
     case 'idle':
+    case 'alliance_bonus':
       return { target: 'skip' };
+
+    case 'alliance_proposed':
+      return { target: 'activity', html: `\ud83e\udd1d ${name} proposed alliance with ${esc(d.target || '?')}`, cssClass: 'alliance' };
+
+    case 'alliance_formed':
+      return { target: 'activity', html: `\u2694\ufe0f Alliance formed: ${name} \u2194 ${esc(d.ally || '?')}`, cssClass: 'alliance' };
+
+    case 'alliance_broken':
+      return { target: 'activity', html: `\ud83d\udd17 Alliance broken: ${name} \u2194 ${esc(d.ally || '?')} (${esc(d.reason || '?')})`, cssClass: d.reason === 'betrayal' ? 'betrayal' : '' };
+
+    case 'betrayal':
+      return { target: 'activity', html: `\ud83d\udde1\ufe0f BETRAYAL! ${name} betrayed ${esc(d.victim || '?')}!`, cssClass: 'betrayal' };
+
+    case 'bounty_kill':
+      return { target: 'activity', html: `\ud83d\udc51 BOUNTY KILL! ${name} took down the leader ${esc(d.target || '?')}!`, cssClass: 'bounty' };
 
     default:
       if (!action) return { target: 'skip' };
@@ -1183,6 +1323,14 @@ function processInit(d) {
     roundScores = d.round.scores || {};
   }
 
+  // Diplomacy data
+  if (d.diplomacy) {
+    dipAlliances = d.diplomacy.alliances || {};
+    dipProposals = d.diplomacy.proposals || {};
+    dipBetrayals = d.diplomacy.betrayals || [];
+    bountyBot = d.diplomacy.bountyBot || null;
+  }
+
   // Select first alive bot if none selected
   if (!selectedBot) {
     const first = Object.values(bots).find(b => b.alive !== false);
@@ -1194,6 +1342,7 @@ function processInit(d) {
   renderBotList();
   renderStatusStrip();
   renderScoreboard();
+  renderDiplomacyPanel();
   updateBar();
 
   addActivity(`Connected to survival grid (${worldW}\u00d7${worldH}, ${Object.keys(bots).length} bots)`, '');
@@ -1358,6 +1507,14 @@ function processTick(d) {
     roundScores = d.round.scores || roundScores;
   }
 
+  // Diplomacy data
+  if (d.diplomacy) {
+    dipAlliances = d.diplomacy.alliances || {};
+    dipProposals = d.diplomacy.proposals || {};
+    dipBetrayals = d.diplomacy.betrayals || [];
+    bountyBot = d.diplomacy.bountyBot || null;
+  }
+
   // Narrative tick separator with bot status hints
   const aliveBots = Object.values(bots).filter(b => b.alive !== false);
   const total = Object.keys(bots).length;
@@ -1376,6 +1533,7 @@ function processTick(d) {
   renderBotList();
   renderStatusStrip();
   renderScoreboard();
+  renderDiplomacyPanel();
   updateBar();
 }
 

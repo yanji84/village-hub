@@ -134,6 +134,8 @@ async function loadState() {
       scores: {},
       roundHistory: [],
     };
+    // Diplomacy state
+    state.diplomacy = loaded.diplomacy || { alliances: {}, proposals: {}, betrayals: [] };
     console.log(`[village] Grid state loaded from ${source}: tick=${state.clock.tick} bots=${Object.keys(state.bots).length}`);
   }
 
@@ -175,6 +177,7 @@ async function loadState() {
         scores: {},
         roundHistory: [],
       },
+      diplomacy: { alliances: {}, proposals: {}, betrayals: [] },
     };
     const resourceCount = Object.keys(tileData).length;
     console.log(`[village] World generated: ${worldConfig.width}x${worldConfig.height}, ${resourceCount} resource tiles`);
@@ -770,6 +773,7 @@ const server = createServer(async (req, res) => {
           scores: state.round.scores,
           roundHistory: state.round.roundHistory,
         } : null,
+        diplomacy: state.diplomacy || null,
       });
     } else {
       const initVt = getVillageTime(gameConfig.timezone);

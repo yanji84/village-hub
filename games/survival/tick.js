@@ -19,6 +19,11 @@ import {
   initScores,
   awardPoints,
   buildScoreboard,
+  processAllianceActions,
+  detectBetrayal,
+  recordBetrayal,
+  tickAllianceBonuses,
+  getBountyBot,
 } from './logic.js';
 import { runFastTick } from './autopilot.js';
 import { appendVillageMemory, buildMemoryEntry } from '../../memory.js';
@@ -173,6 +178,11 @@ export async function survivalTick(ctx) {
     }
   }
 
+  // Ensure diplomacy state exists
+  if (gameConfig.raw.diplomacy && !state.diplomacy) {
+    state.diplomacy = { alliances: {}, proposals: {}, betrayals: [] };
+  }
+
   // Read daily costs for cost cap enforcement
   const dailyCosts = new Map();
   for (const [botName, info] of participants) {
@@ -270,6 +280,7 @@ export async function survivalTick(ctx) {
       fastTickStats: botState.fastTickStats || null,
       round: state.round || null,
       displayNames,
+      diplomacy: state.diplomacy || null,
     });
 
     const conversationId = `survival:${botName}`;
@@ -366,11 +377,23 @@ export async function survivalTick(ctx) {
         if (state.round) {
           awardPoints(state.round.scores, ev.bot, 'death', gameConfig);
         }
-        // Score: kill points for attackers
+        // Score: kill points for attackers + betrayal/bounty bonuses
         if (state.round) {
+          const bountyBot = getBountyBot(state.round.scores);
           for (const atk of pendingAttacks) {
             if (atk.target === ev.bot) {
               awardPoints(state.round.scores, atk.attacker, 'kill', gameConfig);
+              // Betrayal bonus
+              if (state.diplomacy && detectBetrayal(atk.attacker, ev.bot, state.diplomacy)) {
+                awardPoints(state.round.scores, atk.attacker, 'betrayalKill', gameConfig);
+                const betrayalEvents = recordBetrayal(atk.attacker, ev.bot, state.diplomacy, tickNum);
+                actionEvents.push(...betrayalEvents);
+              }
+              // Bounty bonus
+              if (ev.bot === bountyBot) {
+                awardPoints(state.round.scores, atk.attacker, 'bountyKill', gameConfig);
+                actionEvents.push({ action: 'bounty_kill', bot: atk.attacker, target: ev.bot, tick: tickNum });
+              }
             }
           }
         }
@@ -385,6 +408,23 @@ export async function survivalTick(ctx) {
   }
 
   allEvents.push(...actionEvents);
+
+  // 6b. Diplomacy — process alliance say messages + proximity bonuses
+  if (state.diplomacy && gameConfig.raw.diplomacy) {
+    if (!state.diplomacy.alliances) state.diplomacy.alliances = {};
+    if (!state.diplomacy.proposals) state.diplomacy.proposals = {};
+    if (!state.diplomacy.betrayals) state.diplomacy.betrayals = [];
+
+    const sayEvents = allEvents.filter(ev => ev.action === 'say');
+    const allianceEvents = processAllianceActions(sayEvents, state.diplomacy, state.bots, tickNum, gameConfig.raw.diplomacy);
+    allEvents.push(...allianceEvents);
+
+    // Alliance proximity bonus
+    if (state.round) {
+      const bonusEvents = tickAllianceBonuses(state.diplomacy, state.bots, state.round.scores, gameConfig);
+      allEvents.push(...bonusEvents);
+    }
+  }
 
   // 7. Broadcast events
   for (const ev of allEvents) {
@@ -484,6 +524,12 @@ export async function survivalTick(ctx) {
       number: state.round.number,
       ticksRemaining: state.round.ticksRemaining,
       scores: state.round.scores,
+    } : undefined,
+    diplomacy: state.diplomacy ? {
+      alliances: state.diplomacy.alliances,
+      proposals: state.diplomacy.proposals,
+      betrayals: state.diplomacy.betrayals,
+      bountyBot: state.round ? getBountyBot(state.round.scores) : null,
     } : undefined,
   });
 }

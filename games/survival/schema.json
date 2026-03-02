@@ -60,8 +60,17 @@
       "gather": 2,
       "explore": 3,
       "survivalTick": 1,
-      "death": -15
+      "death": -15,
+      "allianceTick": 1,
+      "betrayalKill": 30,
+      "bountyKill": 25
     }
+  },
+
+  "diplomacy": {
+    "maxAllies": 1,
+    "proposalExpireTicks": 5,
+    "proximityRadius": 8
   },
 
   "items": {

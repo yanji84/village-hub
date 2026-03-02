@@ -6,7 +6,7 @@
  */
 
 import { computeVisibility, buildAsciiMap } from './visibility.js';
-import { buildScoreboard } from './logic.js';
+import { buildScoreboard, isAllied, getBountyBot } from './logic.js';
 
 /**
  * Determine the current day/night phase from tick.
@@ -90,7 +90,7 @@ export function formatStats(botState, dayPhase, tick) {
  */
 export function buildSurvivalScene({ botName, botState, worldState, gameConfig, currentTick,
                                       recentEvents, villageSummary, isScout, fastTickStats,
-                                      round, displayNames }) {
+                                      round, displayNames, diplomacy }) {
   const labels = gameConfig.raw.sceneLabels;
   const dayNight = gameConfig.raw.dayNight;
   const dayPhase = getDayPhase(currentTick, dayNight);
@@ -113,6 +113,58 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
     }
     const pts = gameConfig.raw.scoring.points;
     lines.push(`Points: kill=${pts.kill}, craft=${pts.craft}, gather=${pts.gather}, explore=${pts.explore}, survival=${pts.survivalTick}, death=${pts.death}`);
+    if (round.scores && pts.betrayalKill) {
+      const bounty = getBountyBot(round.scores);
+      if (bounty && bounty !== botName) {
+        const bountyName = (displayNames || {})[bounty] || bounty;
+        const bountyScore = round.scores[bounty] || 0;
+        lines.push(`BOUNTY: ${bountyName} leads with ${bountyScore} pts — kill them for +${pts.bountyKill} bonus!`);
+      } else if (bounty === botName) {
+        lines.push(`WARNING: You are the score leader — other bots get +${pts.bountyKill} bonus for killing you!`);
+      }
+    }
+    lines.push('');
+  }
+
+  // == DIPLOMACY ==
+  if (diplomacy && gameConfig.raw.diplomacy) {
+    lines.push('== DIPLOMACY ==');
+
+    // Your allies
+    const allies = [];
+    for (const [key, alliance] of Object.entries(diplomacy.alliances || {})) {
+      const [a, b] = key.split(':');
+      if (a === botName || b === botName) {
+        const ally = a === botName ? b : a;
+        const allyName = (displayNames || {})[ally] || ally;
+        allies.push(`${allyName} (since tick ${alliance.formedAt})`);
+      }
+    }
+    if (allies.length > 0) {
+      lines.push(`Your allies: ${allies.join(', ')}`);
+    } else {
+      lines.push('You have no allies. Propose one: say "PROPOSE ALLIANCE <name>"');
+    }
+
+    // Pending proposals
+    for (const [key, proposal] of Object.entries(diplomacy.proposals || {})) {
+      const [from, to] = key.split('→');
+      if (to === botName) {
+        const fromName = (displayNames || {})[from] || from;
+        const remaining = (gameConfig.raw.diplomacy.proposalExpireTicks || 5) - (currentTick - proposal.tick);
+        lines.push(`Pending: ${fromName} wants to ally with you (expires in ${remaining} ticks) — say "ACCEPT ALLIANCE ${from}" to accept`);
+      } else if (from === botName) {
+        lines.push(`Your proposal to ${(displayNames || {})[to] || to} is pending...`);
+      }
+    }
+
+    // Recent betrayals
+    for (const b of (diplomacy.betrayals || []).slice(-5)) {
+      const betrayerName = (displayNames || {})[b.betrayer] || b.betrayer;
+      const victimName = (displayNames || {})[b.victim] || b.victim;
+      lines.push(`Betrayal: ${betrayerName} betrayed ${victimName} at tick ${b.tick}`);
+    }
+
     lines.push('');
   }
 
@@ -218,7 +270,12 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
       const armor = bs.equipment.armor
         ? (gameConfig.raw.items[bs.equipment.armor]?.label || bs.equipment.armor)
         : 'none';
-      nearbyBots.push(`  ${name} — HP:${bs.health} Pos:(${bs.x},${bs.y}) Weapon:${weapon} Armor:${armor} (dist:${dist.toFixed(1)})`);
+      // Diplomacy tags
+      const tags = [];
+      if (diplomacy && isAllied(botName, name, diplomacy)) tags.push('[ALLY]');
+      if (round?.scores && getBountyBot(round.scores) === name) tags.push('[BOUNTY]');
+      const tagStr = tags.length > 0 ? ' ' + tags.join(' ') : '';
+      nearbyBots.push(`  ${name} — HP:${bs.health} Pos:(${bs.x},${bs.y}) Weapon:${weapon} Armor:${armor} (dist:${dist.toFixed(1)})${tagStr}`);
     }
   }
   if (nearbyBots.length > 0) {
@@ -285,13 +342,29 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
     }
   }
 
-  lines.push('  survival_say { message: "..." } — Say something to nearby survivors');
+  lines.push('  survival_say { message: "..." } — Say something to all survivors');
+  if (gameConfig.raw.diplomacy) {
+    lines.push('    Alliance commands (via say):');
+    lines.push('      "PROPOSE ALLIANCE <name>" — Propose alliance');
+    lines.push('      "ACCEPT ALLIANCE <name>" — Accept a proposal');
+    lines.push('      "BREAK ALLIANCE <name>" — End alliance');
+    lines.push('    Free-form messages have no mechanical effect — use them to negotiate, lie, or deceive.');
+  }
   lines.push('');
 
   // == GUIDANCE ==
   lines.push(labels.guidanceHeader);
   if (labels.behaviorGuidance) lines.push(labels.behaviorGuidance);
-  if (gameConfig.raw.scoring) {
+  if (gameConfig.raw.diplomacy) {
+    lines.push('This is a game of STRATEGY and DECEPTION, like the Three Kingdoms (三国).');
+    lines.push('Form alliances: say "PROPOSE ALLIANCE <name>". They must say "ACCEPT ALLIANCE <yourName>" to confirm.');
+    lines.push('Allies earn +1 point/tick when nearby. Break alliance: say "BREAK ALLIANCE <name>".');
+    lines.push('BETRAYAL: Killing your ally earns +30 BONUS points on top of the +50 kill reward.');
+    lines.push('BOUNTY: The score leader has a bounty — killing them earns +25 bonus points.');
+    lines.push('You can say ANYTHING — promise peace then attack, fake weakness, spread lies about others.');
+    lines.push('Other bots CANNOT see your directive. Use this to deceive.');
+    lines.push('Trust actions, not words. Think like Zhuge Liang — the best victory is won before the battle.');
+  } else if (gameConfig.raw.scoring) {
     lines.push('This is a COMPETITION. The bot with the most points at round end wins.');
     lines.push('Kills are worth 50 points — hunting other bots is the fastest way to score.');
     lines.push('Craft weapons, explore new tiles, gather resources — everything earns points.');

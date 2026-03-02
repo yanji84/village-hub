@@ -48,6 +48,155 @@ export function buildScoreboard(scores, displayNames) {
     .sort((a, b) => b.score - a.score);
 }
 
+// --- Diplomacy ---
+
+const ALLIANCE_RE = /^(PROPOSE|ACCEPT|BREAK)\s+ALLIANCE\s+(\S+)/i;
+
+/**
+ * Parse a say message for alliance keywords.
+ * @returns {{ action: 'propose'|'accept'|'break', target: string } | null}
+ */
+export function parseAllianceMessage(message) {
+  const m = (message || '').match(ALLIANCE_RE);
+  if (!m) return null;
+  return { action: m[1].toLowerCase(), target: m[2] };
+}
+
+/** Canonical alliance key (sorted so order doesn't matter). */
+function allianceKey(a, b) {
+  return [a, b].sort().join(':');
+}
+
+/**
+ * Check if two bots are currently allied.
+ */
+export function isAllied(botA, botB, diplomacy) {
+  return !!diplomacy.alliances[allianceKey(botA, botB)];
+}
+
+/**
+ * Get the bounty bot (highest scorer).
+ * @returns {string|null}
+ */
+export function getBountyBot(scores) {
+  let best = null, bestScore = -Infinity;
+  for (const [bot, score] of Object.entries(scores)) {
+    if (score > bestScore) { bestScore = score; best = bot; }
+  }
+  return best;
+}
+
+/**
+ * Process say events for alliance actions. Mutates diplomacy state.
+ * @returns {Array} diplomatic events to broadcast
+ */
+export function processAllianceActions(sayEvents, diplomacy, bots, currentTick, diplomacyCfg) {
+  const events = [];
+  const maxAllies = diplomacyCfg.maxAllies || 1;
+  const expireTicks = diplomacyCfg.proposalExpireTicks || 5;
+
+  // Count current allies per bot
+  function allyCount(botName) {
+    let count = 0;
+    for (const key of Object.keys(diplomacy.alliances)) {
+      if (key.includes(botName)) count++;
+    }
+    return count;
+  }
+
+  for (const ev of sayEvents) {
+    if (ev.action !== 'say' || !ev.bot || !ev.message) continue;
+    const parsed = parseAllianceMessage(ev.message);
+    if (!parsed) continue;
+    const { action, target } = parsed;
+
+    // Target must exist
+    if (!bots[target]) continue;
+    // Can't ally with yourself
+    if (target === ev.bot) continue;
+
+    if (action === 'propose') {
+      const key = `${ev.bot}→${target}`;
+      if (isAllied(ev.bot, target, diplomacy)) continue; // already allied
+      if (allyCount(ev.bot) >= maxAllies) continue; // at limit
+      diplomacy.proposals[key] = { tick: currentTick };
+      events.push({ action: 'alliance_proposed', bot: ev.bot, target, tick: currentTick });
+    }
+
+    if (action === 'accept') {
+      // Look for a matching proposal from target → ev.bot
+      const proposalKey = `${target}→${ev.bot}`;
+      const proposal = diplomacy.proposals[proposalKey];
+      if (!proposal) continue; // no pending proposal
+      if (isAllied(ev.bot, target, diplomacy)) continue; // already allied
+      if (allyCount(ev.bot) >= maxAllies || allyCount(target) >= maxAllies) continue;
+
+      // Form alliance
+      const aKey = allianceKey(ev.bot, target);
+      diplomacy.alliances[aKey] = { formedAt: currentTick, proposedBy: target };
+      delete diplomacy.proposals[proposalKey];
+      events.push({ action: 'alliance_formed', bot: ev.bot, ally: target, tick: currentTick });
+    }
+
+    if (action === 'break') {
+      const aKey = allianceKey(ev.bot, target);
+      if (!diplomacy.alliances[aKey]) continue;
+      delete diplomacy.alliances[aKey];
+      events.push({ action: 'alliance_broken', bot: ev.bot, ally: target, reason: 'formal', tick: currentTick });
+    }
+  }
+
+  // Expire old proposals
+  for (const [key, proposal] of Object.entries(diplomacy.proposals)) {
+    if (currentTick - proposal.tick > expireTicks) {
+      delete diplomacy.proposals[key];
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Detect if an attack is a betrayal (attacker and target are allied).
+ */
+export function detectBetrayal(attacker, target, diplomacy) {
+  return isAllied(attacker, target, diplomacy);
+}
+
+/**
+ * Dissolve alliance on betrayal. Mutates diplomacy. Returns events.
+ */
+export function recordBetrayal(attacker, victim, diplomacy, currentTick) {
+  const aKey = allianceKey(attacker, victim);
+  delete diplomacy.alliances[aKey];
+  diplomacy.betrayals.push({ betrayer: attacker, victim, tick: currentTick });
+  return [
+    { action: 'betrayal', bot: attacker, victim, tick: currentTick },
+    { action: 'alliance_broken', bot: attacker, ally: victim, reason: 'betrayal', tick: currentTick },
+  ];
+}
+
+/**
+ * Award alliance proximity bonus for allied bots within range.
+ * @returns {Array} events
+ */
+export function tickAllianceBonuses(diplomacy, bots, scores, config) {
+  const events = [];
+  const radius = config.raw.diplomacy?.proximityRadius || 8;
+  for (const [key, alliance] of Object.entries(diplomacy.alliances)) {
+    const [botA, botB] = key.split(':');
+    const a = bots[botA], b = bots[botB];
+    if (!a?.alive || !b?.alive) continue;
+    const dist = Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
+    if (dist <= radius) {
+      awardPoints(scores, botA, 'allianceTick', config);
+      awardPoints(scores, botB, 'allianceTick', config);
+      events.push({ action: 'alliance_bonus', bots: [botA, botB], dist: Math.round(dist) });
+    }
+  }
+  return events;
+}
+
 // --- Direction mapping ---
 
 const DIRECTIONS = {
