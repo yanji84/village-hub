@@ -596,42 +596,6 @@ function render() {
     }
   }
 
-  // Alliance lines between allied bots
-  for (const [key] of Object.entries(dipAlliances)) {
-    const [a, b] = key.split(':');
-    const botA = bots[a], botB = bots[b];
-    if (!botA || !botB) continue;
-    const ax = (botA.renderX !== undefined ? botA.renderX : botA.x) * TILE + TILE / 2 - cameraX;
-    const ay = (botA.renderY !== undefined ? botA.renderY : botA.y) * TILE + TILE / 2 - cameraY;
-    const bx = (botB.renderX !== undefined ? botB.renderX : botB.x) * TILE + TILE / 2 - cameraX;
-    const by = (botB.renderY !== undefined ? botB.renderY : botB.y) * TILE + TILE / 2 - cameraY;
-    cx.strokeStyle = 'rgba(79,195,247,0.5)';
-    cx.lineWidth = Math.max(1, TILE / 8);
-    cx.setLineDash([]);
-    cx.beginPath();
-    cx.moveTo(ax, ay);
-    cx.lineTo(bx, by);
-    cx.stroke();
-  }
-  // Proposal dashed lines
-  for (const [key] of Object.entries(dipProposals)) {
-    const [a, b] = key.split('\u2192');
-    const botA = bots[a], botB = bots[b];
-    if (!botA || !botB) continue;
-    const ax = (botA.renderX !== undefined ? botA.renderX : botA.x) * TILE + TILE / 2 - cameraX;
-    const ay = (botA.renderY !== undefined ? botA.renderY : botA.y) * TILE + TILE / 2 - cameraY;
-    const bx = (botB.renderX !== undefined ? botB.renderX : botB.x) * TILE + TILE / 2 - cameraX;
-    const by = (botB.renderY !== undefined ? botB.renderY : botB.y) * TILE + TILE / 2 - cameraY;
-    cx.strokeStyle = 'rgba(150,150,150,0.3)';
-    cx.lineWidth = Math.max(1, TILE / 8);
-    cx.setLineDash([3, 3]);
-    cx.beginPath();
-    cx.moveTo(ax, ay);
-    cx.lineTo(bx, by);
-    cx.stroke();
-    cx.setLineDash([]);
-  }
-
   // Day/night tint
   applyDayNightTint();
 
