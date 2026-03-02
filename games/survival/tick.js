@@ -40,10 +40,20 @@ export function fastTick(ctx) {
     displayNames[name] = info.displayName;
   }
 
+  // Snapshot bots already at 0 HP before fast tick (they haven't been respawned yet)
+  const alreadyDead = new Set();
+  if (state.round && gameConfig.raw.scoring) {
+    for (const [name, bs] of Object.entries(state.bots)) {
+      if (bs.health <= 0) alreadyDead.add(name);
+    }
+  }
+
   const { events, positionUpdates } = runFastTick(state, gameConfig);
 
   // Score autopilot events
+  // Only score kills/deaths for bots that were alive at start of this fast tick
   if (state.round && gameConfig.raw.scoring) {
+    const killedThisTick = new Set();
     for (const ev of events) {
       if (ev.action === 'gather' && ev.bot) {
         awardPoints(state.round.scores, ev.bot, 'gather', gameConfig);
@@ -57,15 +67,16 @@ export function fastTick(ctx) {
           awardPoints(state.round.scores, ev.bot, 'explore', gameConfig);
         }
       }
-      if (ev.action === 'killed' && ev.bot) {
+      if (ev.action === 'killed' && ev.bot && !alreadyDead.has(ev.bot) && !killedThisTick.has(ev.bot)) {
+        killedThisTick.add(ev.bot);
         awardPoints(state.round.scores, ev.bot, 'death', gameConfig);
       }
-      if (ev.action === 'attack' && ev.bot) {
-        // Check if the target was killed in this batch
-        const targetBot = state.bots[ev.target];
-        if (targetBot && targetBot.health <= 0) {
-          awardPoints(state.round.scores, ev.bot, 'kill', gameConfig);
-        }
+    }
+    // Award kill points only for fresh kills this tick (not already-dead bots)
+    for (const ev of events) {
+      if (ev.action === 'attack' && ev.bot && killedThisTick.has(ev.target)) {
+        awardPoints(state.round.scores, ev.bot, 'kill', gameConfig);
+        killedThisTick.delete(ev.target); // one kill reward per death
       }
     }
   }
