@@ -281,7 +281,8 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
       if (diplomacy && isAllied(botName, name, diplomacy)) tags.push('[ALLY]');
       if (round?.scores && getBountyBot(round.scores) === name) tags.push('[BOUNTY]');
       const tagStr = tags.length > 0 ? ' ' + tags.join(' ') : '';
-      nearbyBots.push(`  ${name} — HP:${bs.health} Pos:(${bs.x},${bs.y}) Weapon:${weapon} Armor:${armor} (dist:${dist.toFixed(1)})${tagStr}`);
+      const dName = (displayNames || {})[name] || name;
+      nearbyBots.push(`  ${dName} — HP:${bs.health} Pos:(${bs.x},${bs.y}) Weapon:${weapon} Armor:${armor} (dist:${dist.toFixed(1)})${tagStr}`);
     }
   }
   if (nearbyBots.length > 0) {
@@ -295,7 +296,8 @@ export function buildSurvivalScene({ botName, botState, worldState, gameConfig, 
   lines.push(labels.recentHeader);
   if (recentEvents && recentEvents.length > 0) {
     for (const ev of recentEvents.slice(-15)) {
-      lines.push(`  ${formatEvent(ev, gameConfig)}`);
+      const formatted = formatEvent(ev, gameConfig, displayNames);
+      if (formatted) lines.push(`  ${formatted}`);
     }
   } else {
     lines.push(labels.noRecent);
@@ -422,48 +424,59 @@ function getCraftableRecipes(inventory, gameConfig) {
 /**
  * Format an event for display in the recent events section.
  */
-function formatEvent(ev, gameConfig) {
+function formatEvent(ev, gameConfig, displayNames) {
   const items = gameConfig.raw.items;
+  const dn = (name) => (displayNames || {})[name] || name;
   switch (ev.action) {
     case 'move':
-      return `${ev.bot} moved ${ev.direction} to (${ev.to.x},${ev.to.y})`;
+      return `${dn(ev.bot)} moved ${ev.direction}`;
     case 'gather':
-      return `${ev.bot} gathered ${ev.items.map(i => `${items[i.item]?.label || i.item} x${i.qty}`).join(', ')}`;
+      return `${dn(ev.bot)} gathered ${ev.items.map(i => `${items[i.item]?.label || i.item} x${i.qty}`).join(', ')}`;
     case 'craft':
-      return `${ev.bot} crafted ${ev.label || ev.item}`;
+      return `${dn(ev.bot)} crafted ${ev.label || ev.item}`;
     case 'eat':
-      return `${ev.bot} ate ${ev.label || ev.item}`;
+      return `${dn(ev.bot)} ate ${ev.label || ev.item}`;
     case 'attack':
-      return `${ev.bot} attacked ${ev.target} for ${ev.damage} damage with ${ev.weapon}`;
+      return `${dn(ev.bot)} attacked ${dn(ev.target)} for ${ev.damage} damage with ${ev.weapon}`;
     case 'attack_attempt':
-      return `${ev.bot} is attacking ${ev.target}!`;
+      return `${dn(ev.bot)} is attacking ${dn(ev.target)}!`;
     case 'death':
-      return `${ev.bot} died at (${ev.x},${ev.y})!`;
+      return `${dn(ev.bot)} died!`;
     case 'killed':
-      return `${ev.bot} was killed!`;
+      return `${dn(ev.bot)} was killed!`;
     case 'starved':
-      return `${ev.bot} starved to death!`;
+      return `${dn(ev.bot)} starved to death!`;
     case 'respawn':
-      return `${ev.bot} respawned at (${ev.x},${ev.y})`;
+      return `${dn(ev.bot)} respawned`;
     case 'hunger_drain':
-      return `${ev.bot} is starving! HP:${ev.health} Hunger:${ev.hunger}`;
+      return `${dn(ev.bot)} is starving! HP:${ev.health}`;
     case 'hunger_warning':
-      return `${ev.bot} is getting very hungry (${ev.hunger}/100)`;
+      return `${dn(ev.bot)} is getting very hungry`;
     case 'say':
-      return `${ev.bot} says: "${ev.message}"`;
+      return `${dn(ev.bot)} says: "${ev.message}"`;
     case 'scout':
-      return `${ev.bot} scouted the area`;
+      return `${dn(ev.bot)} scouted the area`;
     case 'directive':
-      return `${ev.bot} set directive: ${ev.intent}${ev.target ? ' → ' + ev.target : ''}`;
+      return null; // hide directive changes from other bots
     case 'directive_fail':
-      return `${ev.bot}: ${ev.reason}`;
+      return `${dn(ev.bot)}: ${ev.reason}`;
     case 'gather_fail':
     case 'move_fail':
     case 'craft_fail':
     case 'eat_fail':
     case 'attack_fail':
-      return `${ev.bot}: ${ev.reason}`;
+      return `${dn(ev.bot)}: ${ev.reason}`;
+    case 'alliance_proposed':
+      return `${dn(ev.bot)} proposed alliance with ${dn(ev.target)}`;
+    case 'alliance_formed':
+      return `Alliance formed: ${dn(ev.bot)} and ${dn(ev.ally)}`;
+    case 'alliance_broken':
+      return `Alliance broken: ${dn(ev.bot)} and ${dn(ev.ally)} (${ev.reason})`;
+    case 'betrayal':
+      return `BETRAYAL! ${dn(ev.bot)} betrayed ${dn(ev.victim)}!`;
+    case 'bounty_kill':
+      return `BOUNTY KILL! ${dn(ev.bot)} took down the leader ${dn(ev.target)}!`;
     default:
-      return `${ev.bot}: ${ev.action}`;
+      return `${dn(ev.bot)}: ${ev.action}`;
   }
 }
