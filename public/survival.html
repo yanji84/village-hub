@@ -36,20 +36,54 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
 .bl-entry .bhp{color:#666;font-size:10px}
 .bl-entry.dead-entry{opacity:.4;text-decoration:line-through}
 
-/* Event log */
+/* Log wrap */
 #log-wrap{flex:1;display:flex;flex-direction:column;min-height:0}
-#log-header{padding:6px 12px;font-size:11px;color:#555;border-bottom:1px solid #1a1a1a;text-transform:uppercase;letter-spacing:1px;flex-shrink:0}
-#log{flex:1;overflow-y:auto;padding:6px 10px}
-.le{font-size:11px;line-height:1.5;color:#777;word-wrap:break-word}
-.le .ts{color:#444}
-.le .bot{color:#4a9;font-weight:600}
-.le .act{color:#da5}
-.le .dmg{color:#e55}
-.le .heal{color:#4caf50}
-.le .item{color:#7af}
-.le .move{color:#888}
-.le .die{color:#f44336;font-weight:700}
-.le .env{color:#9e9e9e;font-style:italic}
+
+/* Status strip */
+#status-strip{flex-shrink:0;max-height:72px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:4px;padding:6px 10px;border-bottom:1px solid #1a1a1a;background:#0d0d0d}
+.ss-bot{display:flex;align-items:center;gap:4px;font-size:10px;padding:2px 6px;border-radius:3px;background:#111;white-space:nowrap}
+.ss-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.ss-dot.danger{animation:dangerPulse 1s ease-in-out infinite}
+@keyframes dangerPulse{0%,100%{box-shadow:0 0 2px #f44336}50%{box-shadow:0 0 8px #f44336,0 0 12px rgba(244,67,54,.5)}}
+.ss-name{color:#bbb;font-weight:600;max-width:60px;overflow:hidden;text-overflow:ellipsis}
+.ss-bars{display:flex;flex-direction:column;gap:1px;width:32px}
+.ss-bar{height:4px;border-radius:1px;background:#222;overflow:hidden}
+.ss-bar-fill{height:100%;transition:width .3s}
+.ss-bar-fill.hp-high{background:#4caf50}
+.ss-bar-fill.hp-mid{background:#ff9800}
+.ss-bar-fill.hp-low{background:#f44336}
+.ss-bar-fill.hunger{background:#ff9800}
+.ss-directive{font-size:9px;color:#888;font-style:italic;max-width:50px;overflow:hidden;text-overflow:ellipsis}
+.ss-bot.dead{opacity:.35}
+
+/* Chat log */
+#chat-wrap{flex:2;display:flex;flex-direction:column;min-height:0;border-bottom:1px solid #1a1a1a}
+#chat-header{padding:4px 12px;font-size:10px;color:#555;border-bottom:1px solid #1a1a1a;text-transform:uppercase;letter-spacing:1px;flex-shrink:0}
+#chat-log{flex:1;overflow-y:auto;padding:4px 8px}
+.chat-msg{padding:3px 6px;margin-bottom:3px;border-left:2px solid #555;font-size:11px;line-height:1.4;word-wrap:break-word}
+.chat-name{font-weight:700;font-size:10px}
+.chat-text{color:#ccc}
+.chat-time{color:#444;font-size:9px;float:right;margin-left:6px}
+
+/* Activity log */
+#activity-wrap{flex:3;display:flex;flex-direction:column;min-height:0}
+#activity-header{padding:4px 12px;font-size:10px;color:#555;border-bottom:1px solid #1a1a1a;text-transform:uppercase;letter-spacing:1px;flex-shrink:0}
+#activity-log{flex:1;overflow-y:auto;padding:4px 8px}
+.act-entry{font-size:11px;line-height:1.5;color:#999;padding:2px 4px;word-wrap:break-word;border-left:2px solid transparent}
+.act-entry.dramatic{color:#f44336;font-weight:700;border-left-color:#f44336;background:rgba(244,67,54,.08)}
+.act-entry.combat{color:#e57373;border-left-color:#e55}
+.act-entry.craft{color:#90caf9;border-left-color:#42a5f5}
+.act-entry.food{color:#a5d6a7;border-left-color:#4caf50}
+.act-entry.directive-entry{color:#fdd835;font-style:italic;border-left-color:#fdd835}
+
+/* Tick separator */
+.tick-separator{text-align:center;font-size:10px;color:#555;padding:4px 0;margin:4px 0;border-top:1px solid #1a1a1a;font-style:italic}
+
+/* Speech bubbles */
+.speech-bubble{position:absolute;background:#fff;color:#222;font:12px/1.3 -apple-system,'Segoe UI',sans-serif;padding:5px 8px;border-radius:8px;max-width:200px;pointer-events:none;z-index:10;box-shadow:0 2px 12px rgba(0,0,0,.4);transform:translate(-12px,-100%);transition:opacity .8s;word-wrap:break-word}
+.speech-bubble::after{content:'';position:absolute;bottom:-5px;left:12px;border:5px solid transparent;border-top-color:#fff;border-bottom:0}
+.speech-bubble .sb-name{font-weight:700;font-size:10px;display:block;margin-bottom:1px}
+.speech-bubble.fade{opacity:0}
 
 /* Bottom bar */
 #bar{height:28px;background:#0d0d0d;border-top:1px solid #1a1a1a;display:flex;align-items:center;padding:0 14px;font-size:11px;color:#555;gap:16px;flex-shrink:0}
@@ -92,8 +126,15 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;cursor:crosshair}
         <h4>Bots</h4>
       </div>
       <div id="log-wrap">
-        <div id="log-header">Event Log</div>
-        <div id="log"></div>
+        <div id="status-strip"></div>
+        <div id="chat-wrap">
+          <div id="chat-header">Chat</div>
+          <div id="chat-log"></div>
+        </div>
+        <div id="activity-wrap">
+          <div id="activity-header">Activity</div>
+          <div id="activity-log"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -199,6 +240,11 @@ function getBotColor(botId) {
     colorIndex++;
   }
   return botColorMap[botId];
+}
+
+function itemLabel(id) {
+  if (!id) return '???';
+  return String(id).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
 function terrainAt(x, y) {
@@ -484,6 +530,7 @@ function render() {
   applyDayNightTint();
 
   updateCamera();
+  positionSpeechBubbles();
   requestAnimationFrame(render);
 }
 
@@ -574,74 +621,223 @@ function renderBotList() {
   });
 }
 
-// ========== UI: EVENT LOG ==========
-function addLog(html) {
-  const el = document.getElementById('log');
+// ========== UI: NARRATIVE LOGS ==========
+function addChat(html, botColor) {
+  const el = document.getElementById('chat-log');
   const div = document.createElement('div');
-  div.className = 'le';
+  div.className = 'chat-msg';
+  div.style.borderLeftColor = botColor || '#555';
   div.innerHTML = html;
   el.appendChild(div);
-
-  // Auto-scroll if near bottom
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
   if (atBottom) el.scrollTop = el.scrollHeight;
+  while (el.children.length > 100) el.firstChild.remove();
+}
 
-  // Limit log entries
-  while (el.children.length > 400) {
-    el.firstChild.remove();
+function addActivity(html, cssClass) {
+  const el = document.getElementById('activity-log');
+  const div = document.createElement('div');
+  div.className = 'act-entry' + (cssClass ? ' ' + cssClass : '');
+  div.innerHTML = html;
+  el.appendChild(div);
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  if (atBottom) el.scrollTop = el.scrollHeight;
+  while (el.children.length > 200) el.firstChild.remove();
+}
+
+function addTickSeparator(text) {
+  const el = document.getElementById('activity-log');
+  const div = document.createElement('div');
+  div.className = 'tick-separator';
+  div.textContent = text;
+  el.appendChild(div);
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+function renderStatusStrip() {
+  const el = document.getElementById('status-strip');
+  const sorted = Object.values(bots).sort((a, b) => {
+    if ((a.alive !== false) !== (b.alive !== false)) return (a.alive !== false) ? -1 : 1;
+    return (a.displayName || a._id).localeCompare(b.displayName || b._id);
+  });
+  let html = '';
+  for (const bot of sorted) {
+    const alive = bot.alive !== false;
+    const color = getBotColor(bot._id);
+    const maxHp = bot.maxHealth || 100;
+    const hpRatio = alive ? Math.max(0, (bot.health || 0) / maxHp) : 0;
+    const hpClass = hpRatio > 0.5 ? 'hp-high' : hpRatio > 0.25 ? 'hp-mid' : 'hp-low';
+    const maxHunger = 100;
+    const hungerVal = bot.hunger !== undefined ? bot.hunger : 0;
+    const hungerRatio = Math.min(1, Math.max(0, hungerVal / maxHunger));
+    const danger = alive && (hpRatio <= 0.25 || hungerRatio >= 0.8);
+    const dir = bot.directive && bot.directive.intent ? bot.directive.intent : '';
+    html += `<div class="ss-bot${alive ? '' : ' dead'}">`;
+    html += `<span class="ss-dot${danger ? ' danger' : ''}" style="background:${color}"></span>`;
+    html += `<span class="ss-name">${esc(bot.displayName || bot._id)}</span>`;
+    html += `<div class="ss-bars">`;
+    html += `<div class="ss-bar"><div class="ss-bar-fill ${hpClass}" style="width:${hpRatio * 100}%"></div></div>`;
+    html += `<div class="ss-bar"><div class="ss-bar-fill hunger" style="width:${hungerRatio * 100}%"></div></div>`;
+    html += `</div>`;
+    if (dir) html += `<span class="ss-directive">${esc(dir)}</span>`;
+    html += `</div>`;
+  }
+  el.innerHTML = html;
+}
+
+// ========== SPEECH BUBBLES ==========
+const speechQueue = [];
+let speechTimer = null;
+const speechDom = {};
+const SPEECH_SHOW_MS = 12000;
+const SPEECH_FADE_MS = 800;
+const SPEECH_STAGGER_MS = 3000;
+
+function queueSpeechBubble(botId, text) {
+  speechQueue.push({ botId, text });
+  if (!speechTimer) drainSpeechQueue();
+}
+
+function drainSpeechQueue() {
+  if (speechQueue.length === 0) { speechTimer = null; return; }
+  const { botId, text } = speechQueue.shift();
+  showSpeechBubble(botId, text);
+  speechTimer = setTimeout(drainSpeechQueue, SPEECH_STAGGER_MS);
+}
+
+function showSpeechBubble(botId, text) {
+  removeSpeechBubble(botId);
+  const bot = bots[botId];
+  if (!bot) return;
+  const txt = text.length > 80 ? text.slice(0, 80) + '\u2026' : text;
+  const color = getBotColor(botId);
+  const el = document.createElement('div');
+  el.className = 'speech-bubble';
+  el.innerHTML = `<span class="sb-name" style="color:${color}">${esc(bot.displayName || botId)}</span>${esc(txt)}`;
+  document.getElementById('map-area').appendChild(el);
+  speechDom[botId] = { el };
+  setTimeout(() => el.classList.add('fade'), SPEECH_SHOW_MS - SPEECH_FADE_MS);
+  setTimeout(() => removeSpeechBubble(botId), SPEECH_SHOW_MS);
+}
+
+function removeSpeechBubble(botId) {
+  if (speechDom[botId]) { speechDom[botId].el.remove(); delete speechDom[botId]; }
+}
+
+function positionSpeechBubbles() {
+  const cr = cv.getBoundingClientRect();
+  const wr = document.getElementById('map-area').getBoundingClientRect();
+  const sx = cr.width / CW, sy = cr.height / CH;
+  const ox = cr.left - wr.left, oy = cr.top - wr.top;
+  for (const [botId, b] of Object.entries(speechDom)) {
+    const bot = bots[botId];
+    if (!bot) continue;
+    const rx = bot.renderX !== undefined ? bot.renderX : bot.x;
+    const ry = bot.renderY !== undefined ? bot.renderY : bot.y;
+    const screenX = (rx * TILE - cameraX) * sx + ox;
+    const screenY = ((ry * TILE - cameraY) - TILE) * sy + oy;
+    b.el.style.left = screenX + 'px';
+    b.el.style.top = screenY + 'px';
   }
 }
 
-function formatSurvivalEvent(d) {
-  const ts = `<span class="ts">[${hm()}]</span>`;
-  const name = d.displayName || d.bot || '?';
-  const bn = `<span class="bot">${esc(name)}</span>`;
+// ========== NARRATIVE EVENT FORMATTER ==========
+const INTENT_EMOJI = {
+  gather: '\u26cf\ufe0f', craft: '\u2694\ufe0f', eat: '\ud83c\udf4e', attack: '\u2694\ufe0f',
+  defend: '\ud83d\udee1\ufe0f', explore: '\ud83d\udd0d', build: '\ud83c\udfd7\ufe0f',
+  rest: '\ud83d\udca4', heal: '\u2764\ufe0f', hunt: '\ud83c\udfaf', flee: '\ud83c\udfc3',
+  rescue: '\ud83d\ude91', trade: '\ud83e\udd1d',
+};
+
+function formatNarrativeEvent(d) {
+  const name = esc(d.displayName || d.bot || '?');
   const action = d.action || '';
+  const time = hm();
 
   switch (action) {
     case 'move':
-      return `${ts} ${bn} <span class="move">moved ${d.direction || ''} to (${d.to?.x ?? d.x},${d.to?.y ?? d.y})</span>`;
+      return { target: 'skip' };
+
+    case 'say':
+      return {
+        target: 'chat',
+        html: `<span class="chat-time">${time}</span><span class="chat-name">${name}</span> ${esc(d.message || '')}`,
+        color: getBotColor(d.bot),
+      };
+
     case 'gather': {
-      const items = d.items ? d.items.map(i => `${i.item} x${i.qty}`).join(', ') : (d.resource || d.item || '???');
-      return `${ts} ${bn} <span class="act">gathered</span> <span class="item">${esc(items)}</span>`;
+      const items = d.items
+        ? d.items.map(i => `${i.qty} ${itemLabel(i.item)}`).join(', ')
+        : (d.qty ? d.qty + ' ' : '') + itemLabel(d.resource || d.item);
+      return { target: 'activity', html: `\u26cf\ufe0f ${name} found ${items}`, cssClass: '' };
     }
+
     case 'craft':
-      return `${ts} ${bn} <span class="act">crafted</span> <span class="item">${esc(d.item || '???')}</span>`;
+      return { target: 'activity', html: `\u2694\ufe0f ${name} crafted ${itemLabel(d.item)}!`, cssClass: 'craft' };
+
     case 'eat':
-      return `${ts} ${bn} <span class="heal">ate</span> <span class="item">${esc(d.item || 'food')}</span>${d.restored ? ' (+' + d.restored + ' hunger)' : ''}`;
+      return { target: 'activity', html: `\ud83c\udf4e ${name} ate ${itemLabel(d.item || 'food')}${d.restored ? ' (+' + d.restored + ' hunger)' : ''}`, cssClass: 'food' };
+
     case 'attack':
-      return `${ts} ${bn} <span class="dmg">attacked</span> <span class="bot">${esc(d.target || '?')}</span>${d.damage ? ' for ' + d.damage + ' dmg' : ''}`;
-    case 'defend':
-      return `${ts} ${bn} <span class="act">defended</span>${d.blocked ? ' (blocked ' + d.blocked + ')' : ''}`;
-    case 'rest':
-      return `${ts} ${bn} <span class="heal">rested</span>${d.restored ? ' (+' + d.restored + ' HP)' : ''}`;
-    case 'build':
-      return `${ts} ${bn} <span class="act">built</span> <span class="item">${esc(d.structure || d.item || '???')}</span>`;
-    case 'equip':
-      return `${ts} ${bn} <span class="act">equipped</span> <span class="item">${esc(d.item || '???')}</span>`;
-    case 'drop':
-      return `${ts} ${bn} <span class="move">dropped</span> <span class="item">${esc(d.item || '???')}</span>`;
-    case 'pickup':
-      return `${ts} ${bn} <span class="act">picked up</span> <span class="item">${esc(d.item || '???')}</span>`;
+      return { target: 'activity', html: `\u2694\ufe0f ${name} attacks ${esc(d.target || '?')}${d.damage ? ' for ' + d.damage + ' damage' : ''}`, cssClass: 'combat' };
+
     case 'die':
     case 'death':
-      return `${ts} ${bn} <span class="die">has died!</span>${d.cause ? ' (' + esc(d.cause) + ')' : ''}`;
+      return { target: 'activity', html: `\ud83d\udc80 ${name} has fallen!${d.cause ? ' (' + esc(d.cause) + ')' : ''}`, cssClass: 'dramatic' };
+
     case 'respawn':
-      return `${ts} ${bn} <span class="heal">respawned</span> at (${d.x},${d.y})`;
+      return { target: 'activity', html: `\u26a1 ${name} respawned at (${d.x},${d.y})`, cssClass: '' };
+
     case 'damage':
-      return `${ts} ${bn} <span class="dmg">took ${d.damage || '?'} damage</span>${d.source ? ' from ' + esc(d.source) : ''}`;
+      return { target: 'activity', html: `\ud83d\udca5 ${name} took ${d.damage || '?'} damage${d.source ? ' from ' + esc(d.source) : ''}`, cssClass: 'combat' };
+
     case 'heal':
-      return `${ts} ${bn} <span class="heal">healed for ${d.amount || '?'} HP</span>`;
-    case 'explore':
-      return `${ts} ${bn} <span class="act">explored</span> the area`;
-    case 'directive':
-      return `${ts} ${bn} <span class="act">set directive:</span> <span class="item">${esc(d.intent || '?')}${d.target ? ' → ' + esc(d.target) : ''}</span>`;
+      return { target: 'activity', html: `\u2764\ufe0f ${name} healed for ${d.amount || '?'} HP`, cssClass: 'food' };
+
+    case 'directive': {
+      const emoji = INTENT_EMOJI[d.intent] || '\ud83d\udd0d';
+      return { target: 'activity', html: `${emoji} ${name} \u2192 ${esc(d.intent || '?')}${d.target ? ' ' + esc(d.target) : ''}`, cssClass: 'directive-entry' };
+    }
+
+    case 'equip':
+      return { target: 'activity', html: `\ud83d\udee1\ufe0f ${name} equipped ${itemLabel(d.item)}`, cssClass: 'craft' };
+
+    case 'build':
+      return { target: 'activity', html: `\ud83c\udfd7\ufe0f ${name} built ${itemLabel(d.structure || d.item)}`, cssClass: 'craft' };
+
+    case 'rest':
+      return { target: 'activity', html: `\ud83d\udca4 ${name} rested${d.restored ? ' (+' + d.restored + ' HP)' : ''}`, cssClass: 'food' };
+
+    case 'pickup':
+      return { target: 'activity', html: `\u26cf\ufe0f ${name} picked up ${itemLabel(d.item)}`, cssClass: '' };
+
+    case 'drop':
+      return { target: 'activity', html: `\ud83d\udce6 ${name} dropped ${itemLabel(d.item)}`, cssClass: '' };
+
+    case 'defend':
+      return { target: 'activity', html: `\ud83d\udee1\ufe0f ${name} defended${d.blocked ? ' (blocked ' + d.blocked + ')' : ''}`, cssClass: 'combat' };
+
     case 'interact':
-      return `${ts} ${bn} <span class="act">interacted with</span> <span class="item">${esc(d.target || '???')}</span>`;
-    case 'say':
-      return `${ts} ${bn}: <span class="env">"${esc(d.message || '')}"</span>`;
+      return { target: 'activity', html: `\ud83e\udd1d ${name} interacted with ${esc(d.target || '?')}`, cssClass: '' };
+
+    case 'explore':
+    case 'idle':
+      return { target: 'skip' };
+
     default:
-      return `${ts} ${bn} <span class="act">${esc(action)}</span>${d.detail ? ' - ' + esc(d.detail) : ''}`;
+      if (!action) return { target: 'skip' };
+      return { target: 'activity', html: `${name} ${esc(action)}${d.detail ? ' \u2014 ' + esc(d.detail) : ''}`, cssClass: '' };
+  }
+}
+
+function routeNarrativeEvent(d) {
+  const ev = formatNarrativeEvent(d);
+  if (ev.target === 'chat') {
+    addChat(ev.html, ev.color);
+    if (d.bot) queueSpeechBubble(d.bot, d.message || '');
+  } else if (ev.target === 'activity') {
+    addActivity(ev.html, ev.cssClass);
   }
 }
 
@@ -870,8 +1066,7 @@ function processInit(d) {
   // Process recent events for the log
   if (d.recentEvents && Array.isArray(d.recentEvents)) {
     for (const ev of d.recentEvents) {
-      const html = formatSurvivalEvent(ev);
-      if (html) addLog(html);
+      routeNarrativeEvent(ev);
     }
   }
 
@@ -884,9 +1079,10 @@ function processInit(d) {
   online = true;
   renderBotInfo();
   renderBotList();
+  renderStatusStrip();
   updateBar();
 
-  addLog(`<span class="ts">[${hm()}]</span> <span class="env">Connected to survival grid (${worldW}x${worldH}, ${Object.keys(bots).length} bots)</span>`);
+  addActivity(`Connected to survival grid (${worldW}\u00d7${worldH}, ${Object.keys(bots).length} bots)`, '');
 }
 
 // ========== PROCESS SURVIVAL EVENT ==========
@@ -935,11 +1131,11 @@ function processSurvivalEvent(d) {
     }
   }
 
-  const html = formatSurvivalEvent(d);
-  if (html) addLog(html);
+  routeNarrativeEvent(d);
 
   renderBotInfo();
   renderBotList();
+  renderStatusStrip();
 }
 
 // ========== PROCESS TICK ==========
@@ -1041,13 +1237,23 @@ function processTick(d) {
     if (terrain) prerenderTerrain();
   }
 
-  const alive = Object.values(bots).filter(b => b.alive !== false).length;
+  // Narrative tick separator with bot status hints
+  const aliveBots = Object.values(bots).filter(b => b.alive !== false);
   const total = Object.keys(bots).length;
-  const evCount = d.events !== undefined ? d.events : '?';
-  addLog(`<span class="ts">[${hm()}]</span> <span class="env">--- Tick ${tick} | ${dayPhase} | ${alive}/${total} alive | ${evCount} events ---</span>`);
+  const hints = aliveBots.slice(0, 4).map(b => {
+    const maxHp = b.maxHealth || 100;
+    const hpRatio = b.health / maxHp;
+    const parts = [esc(b.displayName || b._id)];
+    if (hpRatio <= 0.25) parts.push('LOW HP');
+    else if (b.hunger >= 80) parts.push('HUNGRY');
+    if (b.directive && b.directive.intent) parts.push(b.directive.intent + (b.directive.target ? ' ' + b.directive.target : ''));
+    return parts.join(': ');
+  }).join(' | ');
+  addTickSeparator(`Tick ${tick} \u2014 ${dayPhase} \u2014 ${aliveBots.length}/${total} alive${hints ? ' \u2014 ' + hints : ''}`);
 
   renderBotInfo();
   renderBotList();
+  renderStatusStrip();
   updateBar();
 }
 
