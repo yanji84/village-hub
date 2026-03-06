@@ -27,6 +27,7 @@ import { getDayPhase } from './games/survival/scene.js';
 import { survivalTick, fastTick as survivalFastTick } from './games/survival/tick.js';
 import { socialTick } from './games/social-village/tick.js';
 import { runSocialFastTick } from './games/social-village/autopilot.js';
+import { generateAppearance } from './games/social-village/appearance.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -93,7 +94,7 @@ let startTime = Date.now();
 const observers = new Set(); // { res, botName }
 
 // --- Participants (event-driven, updated by /api/join and /api/leave) ---
-const participants = new Map(); // botName → { port, displayName }
+const participants = new Map(); // botName → { port, displayName, appearance? }
 const failureCounts = new Map(); // botName → consecutive failure count
 const lastMoveTick = new Map();  // botName → tick number of last move (cooldown)
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -371,7 +372,14 @@ async function recoverParticipants() {
 
       const identity = await identityManager.read(botName);
       const displayName = identity?.self?.displayName || botName;
-      participants.set(botName, { port, displayName });
+      let appearance = null;
+      if (!isGridGame) {
+        try {
+          const occupation = state.occupations?.[botName]?.title || null;
+          appearance = await generateAppearance(botName, occupation);
+        } catch { /* non-critical */ }
+      }
+      participants.set(botName, { port, displayName, appearance });
       console.log(`[village] Recovery: ${botName} OK (port ${port})`);
     } catch {
       toRemove.push({ botName, reason: 'error reading config' });
@@ -395,10 +403,18 @@ async function recoverParticipants() {
         const { botName } = stillUnrecovered[i];
         const tokenEntry = tokensByBot.get(botName);
         if (tokenEntry) {
+          let remoteAppearance = null;
+          if (!isGridGame) {
+            try {
+              const occupation = state.occupations?.[botName]?.title || null;
+              remoteAppearance = await generateAppearance(botName, occupation);
+            } catch { /* non-critical */ }
+          }
           participants.set(botName, {
             port: null,
             displayName: tokenEntry.displayName || botName,
             remote: true,
+            appearance: remoteAppearance,
           });
           stillUnrecovered.splice(i, 1);
           console.log(`[village] Recovery: ${botName} OK (remote)`);
@@ -627,10 +643,21 @@ const server = createServer(async (req, res) => {
       } catch { /* use what was provided */ }
     }
 
+    // Generate appearance for social-village bots
+    let appearance = null;
+    if (!isGridGame) {
+      try {
+        const occupation = state.occupations?.[botName]?.title || null;
+        appearance = await generateAppearance(botName, occupation);
+      } catch (err) {
+        console.warn(`[village] Failed to generate appearance for ${botName}: ${err.message}`);
+      }
+    }
+
     // Add to participants map
     participants.set(botName, remote
-      ? { port: null, displayName: name, remote: true }
-      : { port, displayName: name });
+      ? { port: null, displayName: name, remote: true, appearance }
+      : { port, displayName: name, appearance });
     failureCounts.delete(botName);
 
     // Place bot in the world
@@ -669,6 +696,7 @@ const server = createServer(async (req, res) => {
         broadcastEvent({
           type: 'movement', bot: botName, displayName: name,
           action: 'join', location: gameConfig.spawnLocation, tick: state.clock.tick,
+          ...(appearance ? { appearance } : {}),
         });
         state.publicLogs[gameConfig.spawnLocation].push({
           bot: botName, action: 'say',
@@ -821,6 +849,7 @@ const server = createServer(async (req, res) => {
         locations: Object.fromEntries(
           initAllLocs.map(l => [l, (state.locations[l] || []).map(b => ({
             name: b, displayName: participants.get(b)?.displayName || b,
+            ...(participants.get(b)?.appearance ? { appearance: participants.get(b).appearance } : {}),
           }))])
         ),
         relationships: state.relationships,

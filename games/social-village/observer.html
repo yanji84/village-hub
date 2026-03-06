@@ -909,9 +909,141 @@ function renderAllLocations() {
 // ========== 32x32 CHARACTER SPRITES ==========
 const ANIM_POSES = ['idle', 'walk', 'talk', 'think', 'sit', 'wave'];
 const charTextureCache = {};
+let charSheet = null; // loaded from characters.png if available
 
-function getCharAnims(color) {
-  if (charTextureCache[color]) return charTextureCache[color];
+// Attempt to load character parts sprite sheet
+(async () => {
+  try {
+    const tex = await PIXI.Assets.load('./assets/characters.png');
+    charSheet = tex;
+    console.log('[observer] Character sprite sheet loaded');
+  } catch {
+    console.log('[observer] No characters.png found — using fallback drawing');
+  }
+})();
+
+// Skin tone hex values matching appearance.skinTone index
+const SKIN_TONES = ['#fce4c8', '#f0c8a0', '#d8a878', '#c09060', '#8a6a48', '#5a4030'];
+
+// Temp canvas for tinting operations
+const _tintCanvas = document.createElement('canvas');
+_tintCanvas.width = SPRITE_SIZE; _tintCanvas.height = SPRITE_SIZE;
+const _tintCtx = _tintCanvas.getContext('2d');
+
+/**
+ * Draw a gray-scale region from charSheet onto ctx, tinted with the given color.
+ * Uses multiply composite (same as TILE_ART_SPEC building walls).
+ */
+function drawTintedPart(ctx, sx, sy, sw, sh, dx, dy, tintColor) {
+  _tintCtx.clearRect(0, 0, sw, sh);
+  // Draw gray-scale part
+  _tintCtx.globalCompositeOperation = 'source-over';
+  _tintCtx.drawImage(charSheet.source.resource, sx, sy, sw, sh, 0, 0, sw, sh);
+  // Multiply tint
+  _tintCtx.globalCompositeOperation = 'multiply';
+  _tintCtx.fillStyle = tintColor;
+  _tintCtx.fillRect(0, 0, sw, sh);
+  // Restore alpha from original
+  _tintCtx.globalCompositeOperation = 'destination-in';
+  _tintCtx.drawImage(charSheet.source.resource, sx, sy, sw, sh, 0, 0, sw, sh);
+  // Composite onto target
+  ctx.drawImage(_tintCanvas, 0, 0, sw, sh, dx, dy, sw, sh);
+}
+
+/**
+ * Draw an untinted region from charSheet onto ctx (for face/eyes).
+ */
+function drawSheetPart(ctx, sx, sy, sw, sh, dx, dy) {
+  ctx.drawImage(charSheet.source.resource, sx, sy, sw, sh, dx, dy, sw, sh);
+}
+
+/**
+ * Hash an appearance object to a cache key string.
+ */
+function appearanceKey(app) {
+  if (!app) return '__none__';
+  return `${app.bodyType}_${app.skinTone}_${app.hairStyle}_${app.hairColor}_${app.eyeStyle}_${app.topStyle}_${app.topColor}_${app.bottomStyle}_${app.bottomColor}_${app.shoeStyle}_${app.shoeColor}_${app.accessory?.style ?? 'n'}_${app.accessory?.color ?? ''}_${app.expression}`;
+}
+
+/**
+ * Composite a layered character from charSheet parts.
+ * Sheet layout: 12 cols (6 poses x 2 frames), rows by part type.
+ * Each cell is 32x32.
+ */
+function compositeCharacter(ctx, appearance, pose, frame) {
+  const poseIdx = ANIM_POSES.indexOf(pose);
+  if (poseIdx < 0) return;
+  const col = poseIdx * 2 + frame; // column in sheet
+  const sx = col * 32;
+  const skinColor = SKIN_TONES[appearance.skinTone] || SKIN_TONES[1];
+
+  ctx.clearRect(0, 0, 32, 32);
+
+  // Shadow (shared, not from sheet — draw manually)
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(16, 30, 7, 2.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 1. Body base (tinted with skin tone) — rows 0-2
+  const bodyRow = appearance.bodyType;
+  drawTintedPart(ctx, sx, bodyRow * 32, 32, 32, 0, 0, skinColor);
+
+  // 2. Outfit bottom (tinted) — rows 14-16
+  const bottomRow = 14 + appearance.bottomStyle;
+  drawTintedPart(ctx, sx, bottomRow * 32, 32, 32, 0, 0, appearance.bottomColor);
+
+  // 3. Shoes (tinted) — rows 17-19
+  const shoeRow = 17 + appearance.shoeStyle;
+  drawTintedPart(ctx, sx, shoeRow * 32, 32, 32, 0, 0, appearance.shoeColor);
+
+  // 4. Outfit top (tinted) — rows 9-13
+  const topRow = 9 + appearance.topStyle;
+  drawTintedPart(ctx, sx, topRow * 32, 32, 32, 0, 0, appearance.topColor);
+
+  // 5. Hair (tinted) — rows 3-8
+  const hairRow = 3 + appearance.hairStyle;
+  drawTintedPart(ctx, sx, hairRow * 32, 32, 32, 0, 0, appearance.hairColor);
+
+  // 6. Face/eyes (actual colors, not tinted) — row 20
+  // Eye style uses cols 0-7 (4 styles x 2 cols each)
+  const eyeCol = appearance.eyeStyle * 2 + frame;
+  drawSheetPart(ctx, eyeCol * 32, 20 * 32, 32, 32, 0, 0);
+
+  // 7. Accessory (if present, tinted) — row 21
+  if (appearance.accessory) {
+    const accCol = appearance.accessory.style * 2 + frame;
+    drawTintedPart(ctx, accCol * 32, 21 * 32, 32, 32, 0, 0, appearance.accessory.color || appearance.topColor);
+  }
+}
+
+/**
+ * Get or create cached animation textures for an appearance.
+ * Falls back to old color-based drawing if charSheet is not loaded.
+ */
+function getCharAnims(appearance) {
+  // Fallback: no sprite sheet or no appearance → use old drawing
+  if (!charSheet || !appearance) {
+    const color = (appearance && appearance.topColor) || BCOLORS[0];
+    if (charTextureCache[color]) return charTextureCache[color];
+    const anims = {};
+    for (const pose of ANIM_POSES) {
+      anims[pose] = [];
+      for (let f = 0; f < 2; f++) {
+        const c = document.createElement('canvas');
+        c.width = SPRITE_SIZE; c.height = SPRITE_SIZE;
+        const ctx = c.getContext('2d');
+        drawSocialChar(ctx, color, f, pose);
+        anims[pose].push(PIXI.Texture.from(c));
+      }
+    }
+    charTextureCache[color] = anims;
+    return anims;
+  }
+
+  // Layered compositor path
+  const key = appearanceKey(appearance);
+  if (charTextureCache[key]) return charTextureCache[key];
   const anims = {};
   for (const pose of ANIM_POSES) {
     anims[pose] = [];
@@ -919,11 +1051,11 @@ function getCharAnims(color) {
       const c = document.createElement('canvas');
       c.width = SPRITE_SIZE; c.height = SPRITE_SIZE;
       const ctx = c.getContext('2d');
-      drawSocialChar(ctx, color, f, pose);
+      compositeCharacter(ctx, appearance, pose, f);
       anims[pose].push(PIXI.Texture.from(c));
     }
   }
-  charTextureCache[color] = anims;
+  charTextureCache[key] = anims;
   return anims;
 }
 
@@ -1232,10 +1364,43 @@ function hm(ts) {
 }
 
 // ========== BOT SPRITE MANAGEMENT ==========
-function mkSprite(name, display, loc) {
-  if (sprites[name]) { sprites[name].dn = display || name; return sprites[name]; }
+
+/**
+ * Generate a client-side fallback appearance from bot name hash.
+ * Used when server doesn't provide appearance data.
+ */
+function fallbackAppearance(name) {
+  const seed = hashStr(name);
+  const rng = mulberry32(seed);
+  const pick = (n) => Math.floor(rng() * n);
+  const pickHex = (arr) => arr[Math.floor(rng() * arr.length)];
+  const hairColors = ['#2a2a3a','#4a3020','#8a3020','#5a4030','#1a1a2a','#6a5040'];
+  const topColors = ['#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#1abc9c','#e67e22','#e91e63'];
+  const bottomColors = ['#3a3a5c','#2a2a3a','#4a2a4a','#3a4a3a'];
+  const shoeColors = ['#4a3728','#3a3a3a','#5a4a3a'];
+  return {
+    bodyType: pick(3), skinTone: pick(6), hairStyle: pick(6),
+    hairColor: pickHex(hairColors), eyeStyle: pick(4),
+    topStyle: pick(5), topColor: pickHex(topColors),
+    bottomStyle: pick(3), bottomColor: pickHex(bottomColors),
+    shoeStyle: pick(3), shoeColor: pickHex(shoeColors),
+    accessory: null, expression: 'neutral',
+  };
+}
+
+function mkSprite(name, display, loc, appearance) {
+  if (sprites[name]) {
+    sprites[name].dn = display || name;
+    // Update appearance if provided and different
+    if (appearance && appearanceKey(appearance) !== appearanceKey(sprites[name].appearance)) {
+      sprites[name].appearance = appearance;
+      rebuildBotTextures(name, appearance);
+    }
+    return sprites[name];
+  }
   const L = LOCS[loc] || LOCS['central-square'];
-  const color = BCOLORS[ci++ % BCOLORS.length];
+  const app = appearance || fallbackAppearance(name);
+  const color = app.topColor || BCOLORS[ci++ % BCOLORS.length];
   let px, py;
   if (L.t === 'plaza' || L.t === 'park') {
     px = L.x + 20 + Math.random() * (L.w - 40);
@@ -1246,7 +1411,7 @@ function mkSprite(name, display, loc) {
   }
   sprites[name] = {
     x: px, y: py, tx: px, ty: py,
-    color, loc, dn: display || name,
+    color, appearance: app, loc, dn: display || name,
     f: 0, mt: 120 + Math.random() * 200,
     pose: 'idle', poseTimer: 0, traveling: false,
   };
@@ -1254,9 +1419,24 @@ function mkSprite(name, display, loc) {
   return sprites[name];
 }
 
+/**
+ * Rebuild textures for a bot whose appearance changed (e.g., occupation update).
+ */
+function rebuildBotTextures(name, appearance) {
+  const bp = botPixi[name];
+  if (!bp) return;
+  const anims = getCharAnims(appearance);
+  bp.body._anims = anims;
+  const pose = bp.body._pose || 'idle';
+  if (anims[pose]) {
+    bp.body.textures = anims[pose];
+    bp.body.play();
+  }
+}
+
 function createBotPixi(name, s) {
   if (botPixi[name]) return botPixi[name];
-  const anims = getCharAnims(s.color);
+  const anims = getCharAnims(s.appearance);
   const container = new PIXI.Container();
 
   const body = new PIXI.AnimatedSprite(anims.idle);
@@ -1739,7 +1919,8 @@ function onEvent(d) {
         bots.forEach(b => {
           const nm = typeof b === 'string' ? b : (b.name || b);
           const dn = typeof b === 'string' ? b : (b.displayName || b.name || b);
-          mkSprite(nm, dn, loc);
+          const app = (typeof b === 'object' && b.appearance) ? b.appearance : null;
+          mkSprite(nm, dn, loc, app);
           updateBotMood(nm);
         });
       }
@@ -1798,7 +1979,7 @@ function onEvent(d) {
     case 'movement': {
       const nm = d.displayName || d.bot;
       if (d.action === 'join') {
-        mkSprite(d.bot, nm, d.location);
+        mkSprite(d.bot, nm, d.location, d.appearance || null);
         setBotPose(d.bot, 'wave', 50);
         if (locBots[d.location] && !locBots[d.location].includes(d.bot)) locBots[d.location].push(d.bot);
         addLog(`${t} <span class="b">${esc(nm)}</span> <span class="j">joined the village</span>`);
@@ -1838,8 +2019,9 @@ function onEvent(d) {
           bots.forEach(b => {
             const nm = typeof b === 'string' ? b : (b.name || b);
             const dn = typeof b === 'string' ? b : (b.displayName || b.name || b);
+            const app = (typeof b === 'object' && b.appearance) ? b.appearance : null;
             allBots.add(nm);
-            const sp = mkSprite(nm, dn, loc);
+            const sp = mkSprite(nm, dn, loc, app);
             if (sp.loc !== loc) animateMove(nm, loc);
             updateBotMood(nm);
           });
@@ -1914,6 +2096,15 @@ function onEvent(d) {
         if (!locBots[d.to].includes(d.bot)) locBots[d.to].push(d.bot);
       }
       addLog(`${t} <span class="auto-move">${esc(nm)} \u2192 ${esc(d.toName || LNAMES[d.to] || d.to)}</span>`);
+      break;
+    }
+
+    case 'appearance_update': {
+      if (d.bot && d.appearance && sprites[d.bot]) {
+        sprites[d.bot].appearance = d.appearance;
+        sprites[d.bot].color = d.appearance.topColor || sprites[d.bot].color;
+        rebuildBotTextures(d.bot, d.appearance);
+      }
       break;
     }
 

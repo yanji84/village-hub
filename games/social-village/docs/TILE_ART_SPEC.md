@@ -36,6 +36,7 @@ village/games/social-village/
     ground.png         256x256   Terrain + path tileset
     parts.png          512x256   Modular building parts (walls, roofs, doors, windows)
     decor.png          256x256   Props, trees, nature, furniture
+    characters.png     384x736   Character parts (body, hair, outfits, faces, accessories)
   docs/
     TILE_ART_SPEC.md             This file
   observer.html                  Loads assets from ./assets/ via PIXI.Assets
@@ -48,11 +49,14 @@ const [groundTex, partsTex, decorTex] = await Promise.all([
   PIXI.Assets.load('./assets/parts.png'),
   PIXI.Assets.load('./assets/decor.png'),
 ]);
+// Character sheet loaded separately (optional — fallback to canvas drawing)
+let charSheet = null;
+try { charSheet = await PIXI.Assets.load('./assets/characters.png'); } catch {}
 ```
 
-3 files. That's it. Every building in the world — current and future — is assembled
-from tiles in `parts.png`. Every piece of ground from `ground.png`. Every decoration
-from `decor.png`.
+4 files. Every building in the world is assembled from tiles in `parts.png`. Every piece
+of ground from `ground.png`. Every decoration from `decor.png`. Every unique character
+from layered parts in `characters.png`.
 
 ---
 
@@ -616,18 +620,129 @@ for the visible area and update incrementally.
 
 ---
 
-## 6. Character Sprites (reference)
+## 6. Character Parts Sheet — `characters.png` (384x736)
 
-Characters stay as 32x32 canvas-drawn sprites (existing system). Listed for scale:
+**Layered sprite parts for unique bot appearances.** Each bot gets a unique look
+composited at runtime from gray-scale parts + color tinting — same pattern as
+building walls in `parts.png`.
 
-- **Size**: 32x32 px (2x2 tiles)
-- **View**: Front-facing
-- **Proportions**: ~28px character height + 4px shadow
-- **Poses**: idle, walk, talk, think, sit, wave (2 frames each)
+The observer loads the sheet and composites parts per bot using the appearance
+config sent via SSE. If `characters.png` is not found, the observer falls back
+to the old canvas-drawn sprites.
 
-A character standing by a door should be ~60-70% of door height. Building walls
-should be 5-8 tiles tall (80-128px), making characters comfortably smaller than
-buildings but clearly visible in front of them.
+### File location
+
+```
+village/games/social-village/
+  assets/
+    characters.png    384x736   Character parts sprite sheet
+```
+
+### Sheet Dimensions
+
+- **Cell size**: 32x32 pixels
+- **Columns**: 12 (6 poses × 2 frames = 384px wide)
+- **Rows**: 23 (736px tall)
+
+### Column Layout (every part uses the same column order)
+
+| Cols | Pose | Frames |
+|------|------|--------|
+| 0-1 | idle | f0, f1 |
+| 2-3 | walk | f0, f1 |
+| 4-5 | talk | f0, f1 |
+| 6-7 | think | f0, f1 |
+| 8-9 | sit | f0, f1 |
+| 10-11 | wave | f0, f1 |
+
+### Row Layout
+
+| Rows | Part | Variants | Tinted? | Description |
+|------|------|----------|---------|-------------|
+| 0-2 | **Body base** | 3 body types (slim, average, stocky) | Skin tone | Gray-scale body+limbs. Skin-exposed areas (neck, hands, face outline) use a distinct marker region. Pose-correct arm/leg positions for each column. |
+| 3-8 | **Hair** | 6 styles (short, medium, messy, long, ponytail, spiky) | Hair color | Gray-scale hair positioned per-pose head location. Must align precisely with body base head position across all poses. |
+| 9-13 | **Outfit top** | 5 styles (tee, collared, vest, jacket, apron) | Top color | Gray-scale torso overlay. Covers body base torso area. Arm openings match body base arm positions per pose. |
+| 14-16 | **Outfit bottom** | 3 styles (pants, shorts, skirt) | Bottom color | Gray-scale leg overlay. Covers body base leg area. |
+| 17-19 | **Shoes** | 3 styles (boots, sneakers, sandals) | Shoe color | Gray-scale foot overlay. Matches body base foot positions per pose. |
+| 20 | **Faces** | 4 eye styles × 2 frames (cols 0-7) + expressions (cols 8-11) | **Not tinted** | Drawn in actual colors. Tiny pixel details — eye whites, pupils, mouth shapes. Eye styles: round, narrow, big, sleepy. Expressions: neutral, smirk, gentle, serious. |
+| 21 | **Accessories** | 5 styles (glasses, hat, scarf, bowtie, flower) | Accessory color | Gray-scale. Optional overlay. Each style uses 2 cols (f0, f1). |
+| 22 | **Skin palettes** | 6 tones | Reference only | Not used at runtime. Reference strips showing base/shade/highlight for each skin tone (light to dark). For the artist's reference when drawing body parts. |
+
+### Gray-Scale Drawing Rules
+
+All tinted parts (body, hair, outfit, shoes, accessories) follow these rules:
+
+- **Base gray**: `#808080`
+- **Highlight**: `#909090` (top/left edges catching light)
+- **Shadow**: `#707070` (bottom/right edges)
+- **Transparent background**: only the part pixels are opaque
+- Parts must leave empty (transparent) space where other layers will show
+
+The code applies color tinting using canvas `globalCompositeOperation: 'multiply'`:
+
+```javascript
+// Draw gray-scale part to temp canvas
+tmpCtx.drawImage(charSheet, sx, sy, 32, 32, 0, 0, 32, 32);
+// Multiply tint color
+tmpCtx.globalCompositeOperation = 'multiply';
+tmpCtx.fillStyle = tintColor;
+tmpCtx.fillRect(0, 0, 32, 32);
+// Restore alpha from original part
+tmpCtx.globalCompositeOperation = 'destination-in';
+tmpCtx.drawImage(charSheet, sx, sy, 32, 32, 0, 0, 32, 32);
+// Composite onto main canvas
+ctx.drawImage(tmpCanvas, 0, 0);
+```
+
+### Drawing Order (back to front)
+
+1. **Shadow** — shared oval, drawn by code (not from sheet)
+2. **Body base** — tinted with skin tone
+3. **Outfit bottom** — tinted with `bottomColor`
+4. **Shoes** — tinted with `shoeColor`
+5. **Outfit top** — tinted with `topColor`
+6. **Hair** — tinted with `hairColor`
+7. **Face/eyes** — actual colors, NOT tinted
+8. **Accessory** — if present, tinted with accessory color
+
+### Alignment Rules
+
+- **Head position** must be identical across all poses for body base, hair, face, and accessory rows
+- **Arm/leg positions** must match exactly between body base and outfit parts for each pose
+- Body base row 0 (slim) should be ~2px narrower than row 2 (stocky) in the torso
+- Outfit tops must cover the body base torso completely — no gray body pixels visible through clothing
+
+### Appearance Config (sent from server per bot)
+
+```javascript
+{
+  bodyType: 0,        // 0=slim, 1=average, 2=stocky → rows 0-2
+  skinTone: 2,        // 0-5 → index into SKIN_TONES palette
+  hairStyle: 3,       // 0-5 → rows 3-8
+  hairColor: '#4a3020',
+  eyeStyle: 1,        // 0-3 → cols 0-7 of row 20
+  topStyle: 2,        // 0-4 → rows 9-13
+  topColor: '#e74c3c',
+  bottomStyle: 0,     // 0-2 → rows 14-16
+  bottomColor: '#3a3a5c',
+  shoeStyle: 0,       // 0-2 → rows 17-19
+  shoeColor: '#4a3728',
+  accessory: null,    // null | { style: 0-4, color: '#hex' } → row 21
+  expression: 'neutral',
+}
+```
+
+**Uniqueness**: 3 body × 6 skin × 6 hair × 6 hairColor × 4 eye × 5 top × 5 topColor
+× 3 bottom × 3 shoe = **~1.4 million** unique combinations from one sprite sheet.
+
+### Adding New Poses
+
+To add a new pose (e.g., `dance`):
+
+1. Add 2 columns to the right of the sheet (new-pose-f0, new-pose-f1)
+2. Draw all parts (body, hair, outfits, etc.) for the new pose in those columns
+3. Add the pose name to the `ANIM_POSES` array in `observer.html`
+4. The compositor indexes by pose position — everything else works automatically
 
 ---
 
@@ -643,3 +758,7 @@ When drawing tiles, keep these expansion scenarios in mind:
 - [ ] **Interior tiles**: if buildings become enterable, add floor/furniture tiles as new sheet
 - [ ] **Night variants**: window glow tiles brighter at night, lamp tiles lit — code handles this with tinting, no extra art needed
 - [ ] **Biome support**: desert village, snow village — new ground.png variants, same parts.png + decor.png work everywhere with tinting
+- [ ] **New character poses**: add 2 columns per pose to characters.png, add name to `ANIM_POSES`
+- [ ] **New outfit styles**: add rows to characters.png (top/bottom/shoes sections)
+- [ ] **New accessories**: add to row 21 of characters.png (max 6 per row, then add row 23+)
+- [ ] **Character emotes**: overlay particle effects per expression — code-side only, no art needed
