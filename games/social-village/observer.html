@@ -911,16 +911,18 @@ const ANIM_POSES = ['idle', 'walk', 'talk', 'think', 'sit', 'wave'];
 const charTextureCache = {};
 let charSheet = null; // loaded from characters.png if available
 
-// Attempt to load character parts sprite sheet
-(async () => {
-  try {
-    const tex = await PIXI.Assets.load('./assets/characters.png');
-    charSheet = tex;
-    console.log('[observer] Character sprite sheet loaded');
-  } catch {
-    console.log('[observer] No characters.png found — using fallback drawing');
-  }
-})();
+// Character sprite sheet loading disabled — AI-generated sheet lacks pixel-level
+// alignment needed for layered compositing. Using procedural drawing fallback.
+// To re-enable: uncomment below and provide a hand-drawn characters.png.
+// (async () => {
+//   try {
+//     const tex = await PIXI.Assets.load('./assets/characters.png');
+//     charSheet = tex;
+//     console.log('[observer] Character sprite sheet loaded');
+//   } catch {
+//     console.log('[observer] No characters.png found — using fallback drawing');
+//   }
+// })();
 
 // Skin tone hex values matching appearance.skinTone index
 const SKIN_TONES = ['#fce4c8', '#f0c8a0', '#d8a878', '#c09060', '#8a6a48', '#5a4030'];
