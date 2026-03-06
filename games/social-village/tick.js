@@ -13,16 +13,10 @@ import { buildScene, getVillageTime } from './scene.js';
 import {
   processActions,
   computeQualityMetrics,
-  trackInteractions,
-  updateCoLocation,
-  updateRelationships,
-  updateEmotions,
   rollVillageEvent,
   rollConversationSpice,
-  decayRelationships,
 } from './logic.js';
-import { appendVillageMemory, buildMemoryEntry } from '../../memory.js';
-import { needsSummarization, summarizeVillageMemory } from '../../summarize.js';
+import { updateSocialDynamics } from './relationship-engine.js';
 
 function buildV2Payload(scene, gameConfig) {
   return {
@@ -32,6 +26,7 @@ function buildV2Payload(scene, gameConfig) {
     systemPrompt: gameConfig.raw.systemPrompt || null,
     allowedReads: gameConfig.raw.allowedReads || [],
     maxActions: gameConfig.raw.maxActions || 2,
+    journalConfig: gameConfig.raw.journalConfig || null,
   };
 }
 
@@ -96,17 +91,20 @@ export async function socialTick(ctx) {
 
   // Build scenes and collect actions per location
   const allEvents = new Map(); // location → events[]
-  const actionCounts = { say: 0, whisper: 0, observe: 0, move: 0 };
+  const actionCounts = { say: 0, whisper: 0, observe: 0, move: 0, decorate: 0, leave_message: 0, explore: 0, build: 0, set_occupation: 0, propose_bond: 0 };
   let botsSent = 0;
   let botsResponded = 0;
   let botsSkippedCost = 0;
   let errors = 0;
 
+  // All locations = schema + custom (built by bots)
+  const allLocations = [...gameConfig.locationSlugs, ...Object.keys(state.customLocations || {})];
+
   // Roll village events and conversation spice for occupied locations
   const activeEvents = new Map();  // location → event text
   const activeSpice = new Map();   // location → spice text
-  for (const loc of gameConfig.locationSlugs) {
-    const botsAtLoc = state.locations[loc];
+  for (const loc of allLocations) {
+    const botsAtLoc = state.locations[loc] || [];
     if (botsAtLoc.length === 0) continue;
     const event = rollVillageEvent(tickNum, loc, state.eventState, gameConfig);
     if (event) {
@@ -125,13 +123,13 @@ export async function socialTick(ctx) {
   // Build all scene requests across all locations from a single snapshot
   const allSceneRequests = [];
 
-  for (const loc of gameConfig.locationSlugs) {
-    const botsAtLoc = [...state.locations[loc]];
+  for (const loc of allLocations) {
+    const botsAtLoc = [...(state.locations[loc] || [])];
     allEvents.set(loc, []);
 
     if (botsAtLoc.length === 0) {
       state.emptyTicks[loc] = (state.emptyTicks[loc] || 0) + 1;
-      if (state.emptyTicks[loc] >= EMPTY_CLEAR_TICKS && state.publicLogs[loc].length > 0) {
+      if (state.emptyTicks[loc] >= EMPTY_CLEAR_TICKS && (state.publicLogs[loc] || []).length > 0) {
         state.publicLogs[loc] = [];
       }
       continue;
@@ -139,6 +137,7 @@ export async function socialTick(ctx) {
 
     state.emptyTicks[loc] = 0;
 
+    if (!state.publicLogs[loc]) state.publicLogs[loc] = [];
     if (state.publicLogs[loc].length > MAX_PUBLIC_LOG_DEPTH) {
       state.publicLogs[loc] = state.publicLogs[loc].slice(-MAX_PUBLIC_LOG_DEPTH);
     }
@@ -180,13 +179,18 @@ export async function socialTick(ctx) {
         villageMemory: villageSummaries.get(botName) || '',
         villageEvent: activeEvents.get(loc) || '',
         conversationSpice: activeSpice.get(loc) || '',
+        fastTickSummary: state.fastTickSummary?.[loc] || [],
         gameConfig,
+        state,
       });
 
       const payload = buildV2Payload(scene, gameConfig);
       allSceneRequests.push({ botName, conversationId, payload, loc });
     }
   }
+
+  // Clear fast tick summary buffer — scenes have captured it
+  state.fastTickSummary = {};
 
   // Send all scenes across all locations in parallel
   const allResults = await Promise.all(
@@ -229,7 +233,7 @@ export async function socialTick(ctx) {
         tick: tickNum,
         phase,
         location: loc,
-        locationName: gameConfig.locationNames[loc],
+        locationName: gameConfig.locationNames[loc] || state.customLocations?.[loc]?.name || loc,
         bot: botName,
         displayName: displayNames[botName],
         ...ev,
@@ -238,72 +242,26 @@ export async function socialTick(ctx) {
     }
   }
 
-  // Track relationships
-  trackInteractions(allEvents, state, displayNames);
-  updateCoLocation(state);
-  const relChanges = updateRelationships(state, displayNames, gameConfig);
-  for (const change of relChanges) {
+  // Update social dynamics (relationships + emotions)
+  const { relationshipChanges, emotionChanges } = updateSocialDynamics({
+    state, allEvents, allResults, displayNames, activeEvents, activeSpice, gameConfig,
+  });
+  for (const change of relationshipChanges) {
     broadcastEvent({
-      type: 'relationship',
-      tick: tickNum,
-      from: change.from,
-      to: change.to,
-      fromDisplay: change.fromDisplay,
-      toDisplay: change.toDisplay,
-      label: change.label,
-      prevLabel: change.prevLabel,
+      type: 'relationship', tick: tickNum,
+      from: change.from, to: change.to,
+      fromDisplay: change.fromDisplay, toDisplay: change.toDisplay,
+      label: change.label, prevLabel: change.prevLabel,
     });
     console.log(`[village] relationship: ${change.fromDisplay} & ${change.toDisplay} → ${change.label || '(none)'}`);
   }
-
-  // Decay relationships for non-co-located pairs
-  decayRelationships(state, gameConfig);
-
-  // Track emotions (pass active events/spice for impulse triggers)
-  const emotionChanges = updateEmotions(state, allEvents, allResults, displayNames, { activeEvents, activeSpice }, gameConfig);
   for (const change of emotionChanges) {
     broadcastEvent({
-      type: 'emotion',
-      tick: tickNum,
-      bot: change.bot,
-      displayName: change.displayName,
-      emotion: change.emotion,
-      prevEmotion: change.prevEmotion,
+      type: 'emotion', tick: tickNum,
+      bot: change.bot, displayName: change.displayName,
+      emotion: change.emotion, prevEmotion: change.prevEmotion,
     });
     console.log(`[village] emotion: ${change.displayName} → ${change.emotion}`);
-  }
-
-  // Write village memories per bot (skip remote — no local filesystem)
-  const timestamp = new Date().toISOString();
-  for (const [loc, events] of allEvents) {
-    if (events.length === 0) continue;
-
-    const botsAtLoc = state.locations[loc];
-    for (const botName of botsAtLoc) {
-      if (!participants.has(botName)) continue;
-      if (participants.get(botName).remote) continue;
-      try {
-        const entry = buildMemoryEntry({
-          location: gameConfig.locationNames[loc] || loc,
-          timestamp,
-          events,
-          botName,
-        });
-        if (entry.trim()) {
-          await appendVillageMemory(botName, entry);
-        }
-      } catch (err) {
-        console.error(`[village] Failed to write memory for ${botName}: ${err.message}`);
-      }
-    }
-  }
-
-  // Summarize oversized village.md files (skip remote — no local filesystem)
-  for (const [botName, info] of participants) {
-    if (info.remote) continue;
-    needsSummarization(botName).then(needed => {
-      if (needed) summarizeVillageMemory(botName);
-    }).catch(() => {});
   }
 
   // Persist state
@@ -342,11 +300,14 @@ export async function socialTick(ctx) {
     nextTickAt: ctx.nextTickAt,
     tickIntervalMs: TICK_INTERVAL_MS,
     locations: Object.fromEntries(
-      gameConfig.locationSlugs.map(l => [l, state.locations[l].map(b => ({
+      allLocations.map(l => [l, (state.locations[l] || []).map(b => ({
         name: b, displayName: displayNames[b] || b,
       }))])
     ),
     relationships: state.relationships,
     emotions: state.emotions,
+    customLocations: state.customLocations || {},
+    occupations: state.occupations || {},
+    bonds: state.bonds || {},
   });
 }

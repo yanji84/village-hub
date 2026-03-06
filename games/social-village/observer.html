@@ -10,13 +10,18 @@ html,body{height:100%;overflow:hidden;background:#111}
 #game{display:flex;flex-direction:row;height:100vh}
 #left{flex:1;display:flex;flex-direction:column;min-width:0}
 #map-wrap{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:#1a2a1a}
-canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+canvas{display:block}
 .bubble{position:absolute;background:#fff;color:#222;font:12px/1.3 -apple-system,'Segoe UI',sans-serif;padding:5px 8px;border-radius:8px;max-width:220px;pointer-events:none;z-index:10;box-shadow:0 2px 12px rgba(0,0,0,.4);transform:translate(-12px,-100%);transition:opacity .8s;word-wrap:break-word}
 .bubble::after{content:'';position:absolute;bottom:-5px;left:12px;border:5px solid transparent;border-top-color:#fff;border-bottom:0}
 .bubble .bn{font-weight:700;font-size:10px;display:block;margin-bottom:1px}
 .bubble.whisper{background:#e8e0f8}
 .bubble.whisper::after{border-top-color:#e8e0f8}
 .bubble.fade{opacity:0}
+.bubble.mini{font-size:10px;padding:3px 6px;max-width:160px;opacity:.7;background:#e8e8e8}
+.bubble.mini::after{border-top-color:#e8e8e8}
+.bubble.mini .bn{font-size:8px}
+.floating-text{position:absolute;color:#5a7a5a;font:italic 10px/1.2 -apple-system,'Segoe UI',sans-serif;pointer-events:none;z-index:8;opacity:.8;transition:opacity 1s;text-shadow:0 1px 3px rgba(0,0,0,.5)}
+.floating-text.fade{opacity:0}
 #bar{height:26px;background:#0d0d0d;border-top:1px solid #1a1a1a;display:flex;align-items:center;padding:0 14px;font:11px/1 -apple-system,'Segoe UI',sans-serif;color:#444;gap:10px;flex-shrink:0}
 #bar .lbl{color:#4a9;font-weight:700}
 .st-run{color:#4a9}.st-pause{color:#a84}.st-off{color:#a44}
@@ -35,6 +40,9 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges}
 .le .t{color:#333}.le .b{color:#4a9;font-weight:600}.le .s{color:#999}
 .le .w{color:#7af;font-style:italic}.le .m{color:#da5}
 .le .j{color:#4a9}.le .l{color:#e55}.le .o{color:#555;font-style:italic}.le .k{color:#333}
+.le .ambient{color:#5a7a5a;font-style:italic;font-size:10px}
+.le .idle{color:#6a6a7a;font-style:italic}
+.le .auto-move{color:#8a7a5a;font-style:italic}
 .tick-sep{border:0;border-top:1px solid #1a1a1a;margin:4px 0}
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-track{background:#0a0a0a}
@@ -49,9 +57,7 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges}
 <body>
 <div id="game">
   <div id="left">
-    <div id="map-wrap">
-      <canvas id="c"></canvas>
-    </div>
+    <div id="map-wrap"></div>
     <div id="bar">
       <span class="lbl">Village</span>
       <span id="tick">&mdash;</span>
@@ -67,41 +73,970 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges}
     <div id="log"></div>
   </div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.min.js"></script>
 <script>
-(() => {
-const CW = 480, CH = 270;
-const cv = document.getElementById('c');
-const cx = cv.getContext('2d');
-cv.width = CW; cv.height = CH;
-cx.imageSmoothingEnabled = false;
+(async () => {
 
+// ========== CONSTANTS ==========
+const CW = 960, CH = 540;
+const SPRITE_SIZE = 32;
+const BCOLORS = ['#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#1abc9c','#e67e22','#e91e63','#00bcd4','#8bc34a','#ff5722','#607d8b'];
+let ci = 0;
+
+// ========== WORLD LAYOUT ==========
+const BASE_LOCATIONS = {
+  'central-square':   { n:'Central Square',  x:900,  y:650,  w:300, h:200, c:'#9a8a7a', r:'#7a6a5a', t:'plaza' },
+  'coffee-hub':       { n:'Coffee Hub',       x:200,  y:150,  w:220, h:160, c:'#8a5a3a', r:'#6a4020', t:'bld' },
+  'knowledge-corner': { n:'Knowledge Corner', x:1500, y:100,  w:260, h:180, c:'#5a6a8a', r:'#3a4a6a', t:'bld' },
+  'chill-zone':       { n:'Chill Zone',       x:100,  y:800,  w:260, h:200, c:'#4a8a4a', r:'#2a6a2a', t:'park' },
+  'workshop':         { n:'Workshop',         x:850,  y:1050, w:250, h:170, c:'#7a6a4a', r:'#5a4a2a', t:'bld' },
+  'sunset-lounge':    { n:'Sunset Lounge',    x:1550, y:750,  w:250, h:190, c:'#8a4a6a', r:'#6a3050', t:'bld' },
+};
+const BASE_EDGES = [
+  ['central-square','coffee-hub'],
+  ['central-square','knowledge-corner'],
+  ['central-square','chill-zone'],
+  ['central-square','workshop'],
+  ['central-square','sunset-lounge'],
+  ['coffee-hub','chill-zone'],
+  ['knowledge-corner','sunset-lounge'],
+];
+
+let LOCS = {};
+let LOC_IDS = [];
+let LNAMES = {};
+let edges = [...BASE_EDGES];
+let worldW = 2000, worldH = 1500;
+
+function initLocations() {
+  LOCS = {};
+  for (const [id, L] of Object.entries(BASE_LOCATIONS)) {
+    LOCS[id] = { ...L, fixed: true };
+  }
+  LOC_IDS = Object.keys(LOCS);
+  LNAMES = {};
+  LOC_IDS.forEach(k => LNAMES[k] = LOCS[k].n);
+}
+initLocations();
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+function addDynamicLocation(slug, name, connectedTo) {
+  if (LOCS[slug]) return;
+  const parentId = connectedTo && LOCS[connectedTo] ? connectedTo : 'central-square';
+  const parent = LOCS[parentId];
+  const angle = (hashStr(slug) % 360) * Math.PI / 180;
+  const dist = 350;
+  const nx = parent.x + parent.w / 2 + Math.cos(angle) * dist - 110;
+  const ny = parent.y + parent.h / 2 + Math.sin(angle) * dist - 75;
+  LOCS[slug] = { n: name, x: nx, y: ny, w: 220, h: 150, c: '#6a7a6a', r: '#4a5a4a', t: 'bld', dynamic: true, connectedTo: parentId };
+  edges.push([parentId, slug]);
+  LOC_IDS = Object.keys(LOCS);
+  LNAMES[slug] = name;
+  if (!locBots[slug]) locBots[slug] = [];
+  computeLayout();
+  rebuildWorld();
+}
+
+// ========== FORCE-DIRECTED LAYOUT ==========
+function computeLayout() {
+  const nodes = Object.entries(LOCS);
+  for (let iter = 0; iter < 80; iter++) {
+    for (let i = 0; i < nodes.length; i++) {
+      const [idA, A] = nodes[i];
+      if (A.fixed) continue;
+      let fx = 0, fy = 0;
+      const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+      // Repulsion from all other nodes
+      for (let j = 0; j < nodes.length; j++) {
+        if (i === j) continue;
+        const [, B] = nodes[j];
+        const bx = B.x + B.w / 2, by = B.y + B.h / 2;
+        const dx = ax - bx, dy = ay - by;
+        const d2 = dx * dx + dy * dy + 1;
+        const d = Math.sqrt(d2);
+        const force = 50000 / d2;
+        fx += (dx / d) * force;
+        fy += (dy / d) * force;
+      }
+      // Attraction along edges
+      for (const [eA, eB] of edges) {
+        let other = null;
+        if (eA === idA) other = LOCS[eB];
+        else if (eB === idA) other = LOCS[eA];
+        if (!other) continue;
+        const bx = other.x + other.w / 2, by = other.y + other.h / 2;
+        const dx = bx - ax, dy = by - ay;
+        const d = Math.sqrt(dx * dx + dy * dy) + 1;
+        const force = (d - 350) * 0.05;
+        fx += (dx / d) * force;
+        fy += (dy / d) * force;
+      }
+      A.x += fx * 0.1;
+      A.y += fy * 0.1;
+    }
+  }
+  updateWorldBounds();
+}
+
+function updateWorldBounds() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const L of Object.values(LOCS)) {
+    minX = Math.min(minX, L.x);
+    minY = Math.min(minY, L.y);
+    maxX = Math.max(maxX, L.x + L.w);
+    maxY = Math.max(maxY, L.y + L.h);
+  }
+  // Ensure all coords have positive margin
+  if (minX < 200) {
+    const shift = 200 - minX;
+    for (const L of Object.values(LOCS)) L.x += shift;
+  }
+  if (minY < 200) {
+    const shift = 200 - minY;
+    for (const L of Object.values(LOCS)) L.y += shift;
+  }
+  maxX = -Infinity; maxY = -Infinity;
+  for (const L of Object.values(LOCS)) {
+    maxX = Math.max(maxX, L.x + L.w);
+    maxY = Math.max(maxY, L.y + L.h);
+  }
+  worldW = Math.max(2000, maxX + 400);
+  worldH = Math.max(1500, maxY + 400);
+}
+updateWorldBounds();
+
+// ========== PIXI SETUP ==========
+if (PIXI.TextureSource && PIXI.TextureSource.defaultOptions) {
+  PIXI.TextureSource.defaultOptions.scaleMode = 'nearest';
+}
+
+const app = new PIXI.Application();
+await app.init({
+  width: CW,
+  height: CH,
+  background: 0x1a2a1a,
+  antialias: true,
+  resolution: 1,
+  autoDensity: false,
+});
+const cv = app.canvas;
+document.getElementById('map-wrap').appendChild(cv);
+
+// Container hierarchy
+const worldContainer = new PIXI.Container();
+const terrainLayer = new PIXI.Container();
+const pathGraphics = new PIXI.Graphics();
+const locationLayer = new PIXI.Container();
+const effectsLayer = new PIXI.Container();
+const botLayer = new PIXI.Container();
+botLayer.sortableChildren = true;
+const overlayContainer = new PIXI.Container();
+const dayNightOverlay = new PIXI.Graphics();
+
+worldContainer.addChild(terrainLayer, pathGraphics, locationLayer, effectsLayer, botLayer);
+overlayContainer.addChild(dayNightOverlay);
+app.stage.addChild(worldContainer, overlayContainer);
+
+// Responsive resize
 function resize() {
-  const w = document.getElementById('map-wrap');
-  const s = Math.min(w.clientWidth / CW, w.clientHeight / CH);
-  cv.style.width = (CW * s) + 'px';
-  cv.style.height = (CH * s) + 'px';
+  const wrap = document.getElementById('map-wrap');
+  const ww = wrap.clientWidth, wh = wrap.clientHeight;
+  if (ww <= 0 || wh <= 0) return;
+  const s = Math.min(ww / CW, wh / CH);
+  cv.style.width = Math.floor(CW * s) + 'px';
+  cv.style.height = Math.floor(CH * s) + 'px';
 }
 addEventListener('resize', resize);
 resize();
 
-// --- Locations ---
-const LOCS = {
-  'central-square':   {n:'Central Square',  x:180,y:85, w:120,h:65, c:'#9a8a7a',r:'#7a6a5a',t:'plaza'},
-  'coffee-hub':       {n:'Coffee Hub',       x:30, y:22, w:72, h:48, c:'#8a5a3a',r:'#6a4020',t:'bld'},
-  'knowledge-corner': {n:'Knowledge Corner', x:360,y:15, w:90, h:52, c:'#5a6a8a',r:'#3a4a6a',t:'bld'},
-  'chill-zone':       {n:'Chill Zone',       x:18, y:170,w:85, h:58, c:'#4a8a4a',r:'#2a6a2a',t:'park'},
-  'workshop':         {n:'Workshop',         x:200,y:200,w:80, h:50, c:'#7a6a4a',r:'#5a4a2a',t:'bld'},
-  'sunset-lounge':    {n:'Sunset Lounge',    x:375,y:155,w:80, h:55, c:'#8a4a6a',r:'#6a3050',t:'bld'},
-};
-const LOC_IDS = Object.keys(LOCS);
-const LNAMES = Object.fromEntries(LOC_IDS.map(k => [k, LOCS[k].n]));
+// ========== CAMERA ==========
+let cameraX = 0, cameraY = 0;
+let cameraTargetX = 0, cameraTargetY = 0;
+let zoom = 1.0, targetZoom = 1.0;
+let dragging = false, dragStartX = 0, dragStartY = 0, dragCamStartX = 0, dragCamStartY = 0;
+let autoFollow = false, lastSpeaker = null;
 
-const BCOLORS = ['#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#1abc9c','#e67e22','#e91e63','#00bcd4','#8bc34a','#ff5722','#607d8b'];
-let ci = 0;
+function clampCamera() {
+  const viewW = CW / zoom;
+  const viewH = CH / zoom;
+  const maxX = Math.max(0, worldW - viewW);
+  const maxY = Math.max(0, worldH - viewH);
+  cameraX = Math.max(0, Math.min(cameraX, maxX));
+  cameraY = Math.max(0, Math.min(cameraY, maxY));
+}
 
-// --- State ---
-let locBots = {}; LOC_IDS.forEach(l => locBots[l] = []);
+function centerCameraOn(wx, wy) {
+  cameraTargetX = wx - CW / (2 * zoom);
+  cameraTargetY = wy - CH / (2 * zoom);
+  cameraX = cameraTargetX;
+  cameraY = cameraTargetY;
+  clampCamera();
+  cameraTargetX = cameraX;
+  cameraTargetY = cameraY;
+}
+
+// Center on central-square initially
+centerCameraOn(
+  LOCS['central-square'].x + LOCS['central-square'].w / 2,
+  LOCS['central-square'].y + LOCS['central-square'].h / 2
+);
+
+// Mouse drag
+cv.addEventListener('mousedown', (e) => {
+  if (e.button === 0) {
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragCamStartX = cameraX;
+    dragCamStartY = cameraY;
+  }
+});
+
+cv.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const rect = cv.getBoundingClientRect();
+  const scaleX = CW / rect.width / zoom;
+  const scaleY = CH / rect.height / zoom;
+  const dx = (e.clientX - dragStartX) * scaleX;
+  const dy = (e.clientY - dragStartY) * scaleY;
+  cameraX = dragCamStartX - dx;
+  cameraY = dragCamStartY - dy;
+  cameraTargetX = cameraX;
+  cameraTargetY = cameraY;
+  clampCamera();
+  if (Math.abs(e.clientX - dragStartX) > 4 || Math.abs(e.clientY - dragStartY) > 4) {
+    autoFollow = false;
+  }
+});
+
+cv.addEventListener('mouseup', (e) => {
+  if (!dragging) return;
+  const dx = Math.abs(e.clientX - dragStartX);
+  const dy = Math.abs(e.clientY - dragStartY);
+  if (dx < 4 && dy < 4) {
+    // Click — jump to clicked location
+    const rect = cv.getBoundingClientRect();
+    const sx = CW / rect.width, sy = CH / rect.height;
+    const wx = (e.clientX - rect.left) * sx / zoom + cameraX;
+    const wy = (e.clientY - rect.top) * sy / zoom + cameraY;
+    for (const L of Object.values(LOCS)) {
+      if (wx >= L.x && wx <= L.x + L.w && wy >= L.y && wy <= L.y + L.h) {
+        cameraTargetX = L.x + L.w / 2 - CW / (2 * zoom);
+        cameraTargetY = L.y + L.h / 2 - CH / (2 * zoom);
+        break;
+      }
+    }
+  }
+  dragging = false;
+});
+
+cv.addEventListener('mouseleave', () => { dragging = false; });
+
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const delta = -Math.sign(e.deltaY) * 0.15;
+  targetZoom = Math.max(0.4, Math.min(3.0, targetZoom + delta));
+}, { passive: false });
+
+// Touch: single-finger pan, two-finger pinch-to-zoom
+let touchDragging = false, touchStartX = 0, touchStartY = 0, touchCamStartX = 0, touchCamStartY = 0;
+let pinching = false, pinchStartDist = 0, pinchStartZoom = 1;
+
+function touchDist(t) {
+  const dx = t[0].clientX - t[1].clientX;
+  const dy = t[0].clientY - t[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+cv.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 2) {
+    pinching = true;
+    touchDragging = false;
+    pinchStartDist = touchDist(e.touches);
+    pinchStartZoom = targetZoom;
+  } else if (e.touches.length === 1) {
+    touchDragging = true;
+    pinching = false;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchCamStartX = cameraX;
+    touchCamStartY = cameraY;
+  }
+}, { passive: false });
+
+cv.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (pinching && e.touches.length >= 2) {
+    const dist = touchDist(e.touches);
+    const scale = dist / pinchStartDist;
+    targetZoom = Math.max(0.4, Math.min(3.0, pinchStartZoom * scale));
+  } else if (touchDragging && e.touches.length === 1) {
+    const rect = cv.getBoundingClientRect();
+    const scaleX = CW / rect.width / zoom;
+    const scaleY = CH / rect.height / zoom;
+    const dx = (e.touches[0].clientX - touchStartX) * scaleX;
+    const dy = (e.touches[0].clientY - touchStartY) * scaleY;
+    cameraX = touchCamStartX - dx;
+    cameraY = touchCamStartY - dy;
+    cameraTargetX = cameraX;
+    cameraTargetY = cameraY;
+    clampCamera();
+    autoFollow = false;
+  }
+}, { passive: false });
+
+cv.addEventListener('touchend', (e) => {
+  if (e.touches.length < 2) pinching = false;
+  if (e.touches.length === 0) touchDragging = false;
+});
+
+// Keyboard shortcuts
+addEventListener('keydown', (e) => {
+  const speed = 40 / zoom;
+  switch (e.key) {
+    case 'ArrowLeft': cameraTargetX -= speed; break;
+    case 'ArrowRight': cameraTargetX += speed; break;
+    case 'ArrowUp': cameraTargetY -= speed; break;
+    case 'ArrowDown': cameraTargetY += speed; break;
+    case '+': case '=': targetZoom = Math.min(3.0, targetZoom + 0.15); break;
+    case '-': case '_': targetZoom = Math.max(0.4, targetZoom - 0.15); break;
+    default: return;
+  }
+  e.preventDefault();
+  autoFollow = false;
+});
+
+function updateCamera() {
+  zoom += (targetZoom - zoom) * 0.12;
+  if (autoFollow && lastSpeaker && sprites[lastSpeaker]) {
+    const s = sprites[lastSpeaker];
+    cameraTargetX = s.x - CW / (2 * zoom);
+    cameraTargetY = s.y - CH / (2 * zoom);
+  }
+  cameraX += (cameraTargetX - cameraX) * 0.08;
+  cameraY += (cameraTargetY - cameraY) * 0.08;
+  clampCamera();
+  worldContainer.scale.set(zoom);
+  worldContainer.position.set(-cameraX * zoom, -cameraY * zoom);
+}
+
+// ========== SEEDED PRNG ==========
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// ========== TERRAIN RENDERING ==========
+let terrainSprite = null;
+
+function prerenderTerrain() {
+  const tc = document.createElement('canvas');
+  tc.width = worldW; tc.height = worldH;
+  const c = tc.getContext('2d');
+  const rng = mulberry32(42);
+
+  // Grass base
+  c.fillStyle = '#3b7d34';
+  c.fillRect(0, 0, worldW, worldH);
+
+  // Grass variation
+  for (let x = 0; x < worldW; x += 6) {
+    for (let y = 0; y < worldH; y += 6) {
+      const v = rng();
+      if (v < 0.3) { c.fillStyle = '#4a8b3f'; c.fillRect(x, y, 4, 4); }
+      else if (v < 0.4) { c.fillStyle = '#55a048'; c.fillRect(x, y, 2, 4); }
+      if (rng() < 0.005) {
+        c.fillStyle = ['#ff6','#f8f','#6ef','#fa5'][Math.floor(rng() * 4)];
+        c.fillRect(x, y, 2, 2);
+      }
+    }
+  }
+
+  // Check if near any location
+  function isNearLoc(px, py, margin) {
+    for (const L of Object.values(LOCS)) {
+      if (px > L.x - margin && px < L.x + L.w + margin &&
+          py > L.y - margin && py < L.y + L.h + margin) return true;
+    }
+    return false;
+  }
+
+  // Trees
+  function drawTreeAt(x, y) {
+    c.fillStyle = '#5a3a1a'; c.fillRect(x + 6, y + 16, 6, 12);
+    c.fillStyle = '#2a7a2a'; c.fillRect(x, y + 6, 18, 14); c.fillRect(x + 2, y, 14, 8);
+    c.fillStyle = '#3a9a3a'; c.fillRect(x + 4, y + 2, 10, 12);
+    c.fillStyle = '#4aaa4a'; c.fillRect(x + 5, y + 3, 4, 4);
+  }
+
+  for (let i = 0; i < 60; i++) {
+    const tx = rng() * (worldW - 40);
+    const ty = rng() * (worldH - 40);
+    if (!isNearLoc(tx, ty, 80)) drawTreeAt(tx, ty);
+  }
+
+  // Rocks
+  for (let i = 0; i < 30; i++) {
+    const rx = rng() * (worldW - 20);
+    const ry = rng() * (worldH - 20);
+    if (!isNearLoc(rx, ry, 60)) {
+      c.fillStyle = '#7a7a6a'; c.fillRect(rx, ry, 10, 6);
+      c.fillStyle = '#8a8a7a'; c.fillRect(rx + 1, ry, 8, 4);
+      c.fillStyle = '#9a9a8a'; c.fillRect(rx + 2, ry + 1, 4, 2);
+    }
+  }
+
+  const tex = PIXI.Texture.from(tc);
+  if (terrainSprite) { terrainLayer.removeChild(terrainSprite); terrainSprite.destroy(); }
+  terrainSprite = new PIXI.Sprite(tex);
+  terrainLayer.addChild(terrainSprite);
+}
+
+// ========== PATH RENDERING ==========
+function computeBezier(ax, ay, bx, by) {
+  // Perpendicular offset for the curve bulge — deterministic from endpoints
+  const mx = (ax + bx) / 2, my = (ay + by) / 2;
+  const dx = bx - ax, dy = by - ay;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  // Perpendicular direction (normalized)
+  const nx = -dy / len, ny = dx / len;
+  // Offset magnitude: 15-25% of length, sign from coordinate hash
+  const sign = ((Math.round(ax * 7 + by * 13) % 2) === 0) ? 1 : -1;
+  const bulge = len * (0.15 + (Math.abs(Math.round(ax + by)) % 10) * 0.01) * sign;
+  const cx = mx + nx * bulge;
+  const cy = my + ny * bulge;
+  return { cx, cy };
+}
+
+function drawPaths() {
+  pathGraphics.clear();
+  for (const [idA, idB] of edges) {
+    const A = LOCS[idA], B = LOCS[idB];
+    if (!A || !B) continue;
+    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+    const bx = B.x + B.w / 2, by = B.y + B.h / 2;
+    const { cx, cy } = computeBezier(ax, ay, bx, by);
+
+    // Outer stone border
+    pathGraphics.moveTo(ax, ay);
+    pathGraphics.quadraticCurveTo(cx, cy, bx, by);
+    pathGraphics.stroke({ color: 0x6b5a40, width: 16, alpha: 0.7, cap: 'round', join: 'round' });
+
+    // Main stone path
+    pathGraphics.moveTo(ax, ay);
+    pathGraphics.quadraticCurveTo(cx, cy, bx, by);
+    pathGraphics.stroke({ color: 0x9a8468, width: 12, alpha: 0.9, cap: 'round', join: 'round' });
+
+    // Inner highlight
+    pathGraphics.moveTo(ax, ay);
+    pathGraphics.quadraticCurveTo(cx, cy, bx, by);
+    pathGraphics.stroke({ color: 0xb0a080, width: 4, alpha: 0.3, cap: 'round', join: 'round' });
+
+    // Dashed stone pattern along the curve
+    const steps = Math.max(8, Math.floor(Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2) / 28));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      // Quadratic bezier point: (1-t)^2*P0 + 2(1-t)t*C + t^2*P1
+      const u = 1 - t;
+      const px = u * u * ax + 2 * u * t * cx + t * t * bx;
+      const py = u * u * ay + 2 * u * t * cy + t * t * by;
+      // Tangent for perpendicular stone lines
+      const tx = 2 * u * (cx - ax) + 2 * t * (bx - cx);
+      const ty = 2 * u * (cy - ay) + 2 * t * (by - cy);
+      const tlen = Math.sqrt(tx * tx + ty * ty) || 1;
+      const pnx = -ty / tlen, pny = tx / tlen;
+      // Short perpendicular dash
+      pathGraphics.moveTo(px + pnx * 4, py + pny * 4);
+      pathGraphics.lineTo(px - pnx * 4, py - pny * 4);
+      pathGraphics.stroke({ color: 0x7d6b50, width: 1.5, alpha: 0.4 });
+    }
+  }
+}
+
+// ========== LOCATION RENDERING ==========
+let locationContainers = {};
+
+function hexToInt(hex) { return parseInt(hex.replace('#', ''), 16); }
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+}
+
+function drawLocationGraphics(id, L) {
+  const container = new PIXI.Container();
+  container.position.set(L.x, L.y);
+  const g = new PIXI.Graphics();
+  const { w, h, t } = L;
+
+  if (t === 'plaza') {
+    // Cobblestone floor
+    g.rect(0, 0, w, h); g.fill(0xbab0a0);
+    g.rect(4, 4, w - 8, h - 8); g.fill(0xa09888);
+    // Stone border pattern
+    for (let i = 0; i < w; i += 12) {
+      g.rect(i, 0, 6, 2); g.fill(0x8a8070);
+      g.rect(i, h - 2, 6, 2); g.fill(0x8a8070);
+    }
+    for (let i = 0; i < h; i += 12) {
+      g.rect(0, i, 2, 6); g.fill(0x8a8070);
+      g.rect(w - 2, i, 2, 6); g.fill(0x8a8070);
+    }
+    // Fountain
+    const fx = w / 2 - 24, fy = h / 2 - 20;
+    g.rect(fx, fy, 48, 40); g.fill(0x778888);
+    g.rect(fx + 4, fy + 2, 40, 2); g.fill(0x889999);
+    g.rect(fx + 6, fy + 6, 36, 28); g.fill(0x4488cc);
+    g.rect(fx + 10, fy + 10, 28, 20); g.fill(0x55aadd);
+    // Fountain pillar
+    g.rect(fx + 20, fy + 8, 8, 24); g.fill(0x889999);
+    g.rect(fx + 16, fy + 6, 16, 4); g.fill(0x889999);
+    // Benches
+    g.rect(20, h - 30, 30, 6); g.fill(0x7a5030);
+    g.rect(20, h - 34, 4, 6); g.fill(0x7a5030);
+    g.rect(46, h - 34, 4, 6); g.fill(0x7a5030);
+    g.rect(w - 50, h - 30, 30, 6); g.fill(0x7a5030);
+    g.rect(w - 50, h - 34, 4, 6); g.fill(0x7a5030);
+    g.rect(w - 24, h - 34, 4, 6); g.fill(0x7a5030);
+  } else if (t === 'park') {
+    // Green ground
+    g.rect(0, 0, w, h); g.fill(0x4a9a50);
+    g.rect(4, 4, w - 8, h - 8); g.fill(0x3a8a40);
+    // Fence
+    for (let i = 0; i < w; i += 16) {
+      g.rect(i, 0, 2, 6); g.fill(0x8a6030);
+      g.rect(i, h - 6, 2, 6); g.fill(0x8a6030);
+    }
+    g.rect(0, 2, w, 2); g.fill(0x8a6030);
+    g.rect(0, h - 4, w, 2); g.fill(0x8a6030);
+    // Pond
+    g.rect(w / 2 + 20, h / 2 - 10, 50, 35); g.fill(0x3a6a8a);
+    g.rect(w / 2 + 24, h / 2 - 6, 42, 27); g.fill(0x4a8aaa);
+    // Trees
+    const treePosns = [[10, 10], [w - 30, 8], [12, h - 40], [w - 28, h - 38]];
+    for (const [tx, ty] of treePosns) {
+      g.rect(tx + 6, ty + 16, 6, 12); g.fill(0x5a3a1a);
+      g.rect(tx, ty + 6, 18, 14); g.fill(0x2a7a2a);
+      g.rect(tx + 2, ty, 14, 8); g.fill(0x2a7a2a);
+      g.rect(tx + 4, ty + 2, 10, 12); g.fill(0x3a9a3a);
+    }
+    // Bench
+    g.rect(w / 2 - 20, h / 2 - 30, 30, 6); g.fill(0x7a5030);
+    g.rect(w / 2 - 20, h / 2 - 34, 4, 6); g.fill(0x7a5030);
+    g.rect(w / 2 + 6, h / 2 - 34, 4, 6); g.fill(0x7a5030);
+  } else {
+    // Regular building
+    const col = hexToInt(L.c);
+    const roof = hexToInt(L.r);
+    // Shadow
+    g.rect(6, 8, w, h); g.fill({ color: 0x000000, alpha: 0.15 });
+    // Walls
+    g.rect(0, 30, w, h - 30); g.fill(col);
+    g.rect(2, 32, w - 4, 6); g.fill({ color: 0xffffff, alpha: 0.06 });
+    // Roof
+    g.rect(-6, 18, w + 12, 16); g.fill(roof);
+    g.rect(4, 10, w - 8, 12); g.fill(roof);
+    g.rect(16, 0, w - 32, 14); g.fill(roof);
+    g.rect(16, 2, w - 32, 2); g.fill({ color: 0xffffff, alpha: 0.08 });
+    // Door
+    const dw = 16, dh = 28;
+    g.rect(w / 2 - dw / 2, h - dh, dw, dh); g.fill(0x3a2a1a);
+    g.rect(w / 2 - dw / 2 + 2, h - dh + 2, dw - 4, dh - 2); g.fill(0x4a3a2a);
+    g.rect(w / 2 + 3, h - 14, 2, 2); g.fill(0xddaa55);
+    // Windows
+    const winY = 40;
+    g.rect(16, winY, 14, 12); g.fill(0xffffe0);
+    g.rect(w - 30, winY, 14, 12); g.fill(0xffffe0);
+    g.rect(23, winY, 1, 12); g.fill(0x5a4a3a);
+    g.rect(16, winY + 5, 14, 1); g.fill(0x5a4a3a);
+    g.rect(w - 23, winY, 1, 12); g.fill(0x5a4a3a);
+    g.rect(w - 30, winY + 5, 14, 1); g.fill(0x5a4a3a);
+
+    // Location-specific details
+    if (id === 'coffee-hub') {
+      g.rect(w - 36, -14, 14, 24); g.fill(0x6a4020);
+      g.rect(w - 38, -16, 18, 6); g.fill(0x5a3010);
+      g.rect(w / 2 - 18, 20, 36, 10); g.fill(0x3a2010);
+      g.rect(w / 2 - 16, 22, 32, 6); g.fill(0x5a3010);
+    } else if (id === 'knowledge-corner') {
+      g.rect(w - 42, winY, 10, 2); g.fill(0xcc3333);
+      g.rect(w - 42, winY + 2, 10, 2); g.fill(0x3333cc);
+      g.rect(w - 42, winY + 4, 10, 2); g.fill(0x33cc33);
+      g.rect(w - 42, winY + 6, 10, 2); g.fill(0xcccc33);
+      g.circle(26, winY + 18, 6); g.fill(0x6688aa);
+      g.rect(24, winY + 24, 4, 6); g.fill(0x556666);
+    } else if (id === 'workshop') {
+      g.rect(w + 6, h - 26, 22, 8); g.fill(0x556666);
+      g.rect(w + 10, h - 34, 14, 8); g.fill(0x667777);
+      g.rect(w + 16, h - 44, 2, 12); g.fill(0x888888);
+      g.rect(w + 12, h - 44, 10, 3); g.fill(0x999999);
+    } else if (id === 'sunset-lounge') {
+      g.rect(-8, 34, 4, 8); g.fill(0xffaa88);
+      g.circle(-6, 34, 3); g.fill(0xffcc66);
+      g.rect(w + 4, 34, 4, 8); g.fill(0xffaa88);
+      g.circle(w + 6, 34, 3); g.fill(0xffcc66);
+    } else if (L.dynamic) {
+      g.rect(w / 2 - 2, -20, 4, 28); g.fill(0x9a9a66);
+      g.moveTo(w / 2 + 2, -20);
+      g.lineTo(w / 2 + 16, -16);
+      g.lineTo(w / 2 + 2, -12);
+      g.fill(0xee9955);
+    }
+  }
+
+  container.addChild(g);
+
+  // Name label
+  const textRes = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+  const nameText = new PIXI.Text({
+    text: L.n,
+    style: {
+      fontFamily: '-apple-system, "Segoe UI", sans-serif',
+      fontSize: 14,
+      fontWeight: 'bold',
+      fill: 0xeeeeee,
+      stroke: { color: 0x000000, width: 4 },
+    },
+    resolution: textRes,
+  });
+  nameText.anchor.set(0.5, 1);
+  nameText.position.set(w / 2, -8);
+  container.addChild(nameText);
+
+  locationLayer.addChild(container);
+  locationContainers[id] = container;
+}
+
+function renderAllLocations() {
+  for (const c of Object.values(locationContainers)) {
+    locationLayer.removeChild(c);
+    c.destroy({ children: true });
+  }
+  locationContainers = {};
+  for (const [id, L] of Object.entries(LOCS)) {
+    drawLocationGraphics(id, L);
+  }
+}
+
+// ========== 32x32 CHARACTER SPRITES ==========
+const ANIM_POSES = ['idle', 'walk', 'talk', 'think', 'sit', 'wave'];
+const charTextureCache = {};
+
+function getCharAnims(color) {
+  if (charTextureCache[color]) return charTextureCache[color];
+  const anims = {};
+  for (const pose of ANIM_POSES) {
+    anims[pose] = [];
+    for (let f = 0; f < 2; f++) {
+      const c = document.createElement('canvas');
+      c.width = SPRITE_SIZE; c.height = SPRITE_SIZE;
+      const ctx = c.getContext('2d');
+      drawSocialChar(ctx, color, f, pose);
+      anims[pose].push(PIXI.Texture.from(c));
+    }
+  }
+  charTextureCache[color] = anims;
+  return anims;
+}
+
+function drawSocialChar(ctx, hexColor, frame, pose) {
+  const { r, g, b } = hexToRgb(hexColor);
+  const hair = `rgb(${Math.max(0, r - 80)},${Math.max(0, g - 80)},${Math.max(0, b - 80)})`;
+  const bodyLight = `rgb(${Math.min(255, r + 40)},${Math.min(255, g + 40)},${Math.min(255, b + 40)})`;
+  const armShade = `rgb(${Math.max(0, r - 25)},${Math.max(0, g - 25)},${Math.max(0, b - 25)})`;
+  const skin = '#f0c8a0';
+  const skinShade = '#d8b090';
+  const eye = '#1a1a2e';
+  const pants = '#3a3a5c';
+  const boot = '#4a3728';
+  const mouth = '#c06060';
+
+  ctx.clearRect(0, 0, 32, 32);
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(16, 30, 7, 2.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  switch (pose) {
+    case 'idle': default: {
+      const y = frame === 1 ? -1 : 0;
+      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, false);
+      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
+      drawArm32(ctx, 6, 15 + y, armShade, skin);
+      drawArm32(ctx, 22, 15 + y, armShade, skin);
+      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
+      break;
+    }
+    case 'walk': {
+      const y = frame === 1 ? -1 : 0;
+      const f = frame === 0 ? 2 : -2;
+      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, false);
+      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
+      drawArm32(ctx, 6, 15 + y - f, armShade, skin);
+      drawArm32(ctx, 22, 15 + y + f, armShade, skin);
+      drawLegs32(ctx, 10 - f, 22 + y, 17 + f, 22 + y, pants, boot);
+      break;
+    }
+    case 'talk': {
+      const y = frame === 1 ? -1 : 0;
+      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, true);
+      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
+      drawArm32(ctx, 6, 15 + y, armShade, skin);
+      // Right arm gesture (raised)
+      ctx.fillStyle = armShade;
+      ctx.fillRect(22, 12 + y, 3, 4);
+      ctx.fillRect(24, 9 + y + (frame === 1 ? -1 : 0), 3, 4);
+      ctx.fillStyle = skin;
+      ctx.fillRect(25, 8 + y + (frame === 1 ? -1 : 0), 2, 2);
+      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
+      break;
+    }
+    case 'think': {
+      const y = frame === 1 ? -1 : 0;
+      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, false);
+      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
+      drawArm32(ctx, 6, 15 + y, armShade, skin);
+      // Right arm on chin
+      ctx.fillStyle = armShade;
+      ctx.fillRect(22, 14 + y, 3, 3);
+      ctx.fillRect(21, 11 + y, 3, 4);
+      ctx.fillStyle = skin;
+      ctx.fillRect(20, 9 + y, 2, 3);
+      // Thought dots
+      if (frame === 1) {
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillRect(26, 4, 2, 2);
+        ctx.fillRect(28, 1, 3, 3);
+      }
+      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
+      break;
+    }
+    case 'sit': {
+      drawHead32(ctx, 10, 6, hair, skin, skinShade, eye, false);
+      drawBody32(ctx, 9, 18, hexColor, bodyLight);
+      drawArm32(ctx, 6, 19, armShade, skin);
+      drawArm32(ctx, 22, 19, armShade, skin);
+      // Seated legs
+      ctx.fillStyle = pants;
+      ctx.fillRect(8, 26, 5, 3);
+      ctx.fillRect(16, 26, 5, 3);
+      ctx.fillRect(6, 27, 3, 3);
+      ctx.fillRect(20, 27, 3, 3);
+      ctx.fillStyle = boot;
+      ctx.fillRect(4, 28, 3, 2);
+      ctx.fillRect(22, 28, 3, 2);
+      break;
+    }
+    case 'wave': {
+      const y = frame === 1 ? -1 : 0;
+      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, true);
+      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
+      drawArm32(ctx, 6, 15 + y, armShade, skin);
+      // Right arm raised high
+      ctx.fillStyle = armShade;
+      ctx.fillRect(22, 12 + y, 3, 3);
+      ctx.fillRect(24, 7 + y, 3, 6);
+      ctx.fillStyle = skin;
+      ctx.fillRect(25, 4 + y + (frame === 1 ? -2 : 0), 3, 3);
+      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
+      break;
+    }
+  }
+}
+
+function drawHead32(ctx, x, y, hair, skin, skinShade, eye, mouthOpen) {
+  ctx.fillStyle = hair;
+  ctx.fillRect(x - 1, y, 14, 4);
+  ctx.fillRect(x - 2, y + 2, 2, 6);
+  ctx.fillStyle = skin;
+  ctx.fillRect(x, y + 3, 12, 9);
+  ctx.fillStyle = skinShade;
+  ctx.fillRect(x, y + 10, 12, 2);
+  ctx.fillStyle = eye;
+  ctx.fillRect(x + 2, y + 5, 2, 2);
+  ctx.fillRect(x + 8, y + 5, 2, 2);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x + 2, y + 5, 1, 1);
+  ctx.fillRect(x + 8, y + 5, 1, 1);
+  if (mouthOpen) {
+    ctx.fillStyle = '#c06060';
+    ctx.fillRect(x + 4, y + 8, 4, 2);
+  } else {
+    ctx.fillStyle = '#c08080';
+    ctx.fillRect(x + 5, y + 9, 2, 1);
+  }
+  ctx.fillStyle = skin;
+  ctx.fillRect(x + 4, y + 12, 4, 2);
+}
+
+function drawBody32(ctx, x, y, color, bodyLight) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, 14, 8);
+  ctx.fillStyle = bodyLight;
+  ctx.fillRect(x + 1, y, 6, 4);
+}
+
+function drawArm32(ctx, x, y, armShade, skin) {
+  ctx.fillStyle = armShade;
+  ctx.fillRect(x, y, 3, 7);
+  ctx.fillStyle = skin;
+  ctx.fillRect(x, y + 7, 3, 2);
+}
+
+function drawLegs32(ctx, lx, ly, rx, ry, pants, boot) {
+  ctx.fillStyle = pants;
+  ctx.fillRect(lx, ly, 4, 5);
+  ctx.fillRect(rx, ry, 4, 5);
+  ctx.fillStyle = boot;
+  ctx.fillRect(lx - 1, ly + 5, 5, 3);
+  ctx.fillRect(rx - 1, ry + 5, 5, 3);
+}
+
+// ========== PARTICLE SYSTEM ==========
+const particles = [];
+const PARTICLE_POOL_SIZE = 200;
+for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+  particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0, color: 0xffffff, size: 2, gravity: 0 });
+}
+const particleGfx = new PIXI.Graphics();
+effectsLayer.addChild(particleGfx);
+
+function emitParticles(worldX, worldY, count, config) {
+  const { colors, speedMin = 0.3, speedMax = 1.5, sizeMin = 1, sizeMax = 3,
+    lifeMin = 20, lifeMax = 40, gravity = 0.03, spread = Math.PI * 2,
+    baseAngle = -Math.PI / 2 } = config;
+  let spawned = 0;
+  for (const p of particles) {
+    if (spawned >= count) break;
+    if (p.active) continue;
+    const angle = Math.random() * spread - spread / 2 + baseAngle;
+    const speed = speedMin + Math.random() * (speedMax - speedMin);
+    p.x = worldX + (Math.random() - 0.5) * 8;
+    p.y = worldY + (Math.random() - 0.5) * 8;
+    p.vx = Math.cos(angle) * speed;
+    p.vy = Math.sin(angle) * speed;
+    p.gravity = gravity;
+    p.life = lifeMin + Math.random() * (lifeMax - lifeMin);
+    p.maxLife = p.life;
+    p.color = colors[Math.floor(Math.random() * colors.length)];
+    p.size = sizeMin + Math.random() * (sizeMax - sizeMin);
+    p.active = true;
+    spawned++;
+  }
+}
+
+function updateParticles() {
+  particleGfx.clear();
+  for (const p of particles) {
+    if (!p.active) continue;
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += p.gravity;
+    p.life--;
+    if (p.life <= 0) { p.active = false; continue; }
+    const alpha = Math.min(1, p.life / p.maxLife * 2);
+    const s = p.size * (0.5 + 0.5 * p.life / p.maxLife);
+    particleGfx.rect(p.x - s / 2, p.y - s / 2, s, s);
+    particleGfx.fill({ color: p.color, alpha });
+  }
+}
+
+function emitAmbientParticles() {
+  // Coffee hub smoke
+  const ch = LOCS['coffee-hub'];
+  if (ch && frame % 15 === 0) {
+    emitParticles(ch.x + ch.w - 29, ch.y - 14, 1, {
+      colors: [0xcccccc, 0xaaaaaa, 0x999999],
+      speedMin: 0.1, speedMax: 0.4, sizeMin: 2, sizeMax: 4,
+      lifeMin: 30, lifeMax: 60, gravity: -0.02,
+      spread: 0.5, baseAngle: -Math.PI / 2,
+    });
+  }
+
+  // Central square fountain
+  const cs = LOCS['central-square'];
+  if (cs && frame % 8 === 0) {
+    emitParticles(cs.x + cs.w / 2, cs.y + cs.h / 2 - 10, 1, {
+      colors: [0x88ccff, 0xaaddff, 0x66bbee],
+      speedMin: 0.2, speedMax: 0.8, sizeMin: 1, sizeMax: 3,
+      lifeMin: 15, lifeMax: 30, gravity: 0.05,
+      spread: Math.PI, baseAngle: -Math.PI / 2,
+    });
+  }
+
+  // Workshop sawdust
+  const ws = LOCS['workshop'];
+  if (ws && frame % 20 === 0) {
+    emitParticles(ws.x + ws.w + 14, ws.y + ws.h - 20, 1, {
+      colors: [0xddcc88, 0xccbb77, 0xbbaa66],
+      speedMin: 0.1, speedMax: 0.3, sizeMin: 1, sizeMax: 2,
+      lifeMin: 20, lifeMax: 40, gravity: 0.01,
+      spread: Math.PI, baseAngle: -Math.PI / 4,
+    });
+  }
+
+  const p = (phase || '').toLowerCase();
+  if (p.includes('night')) {
+    // Fireflies at chill-zone
+    const cz = LOCS['chill-zone'];
+    if (cz && frame % 25 === 0) {
+      emitParticles(
+        cz.x + cz.w / 2 + (Math.random() - 0.5) * cz.w,
+        cz.y + cz.h / 2 + (Math.random() - 0.5) * cz.h,
+        1, {
+          colors: [0xffff44, 0xeeff44, 0xddff22],
+          speedMin: 0.05, speedMax: 0.2, sizeMin: 1, sizeMax: 2,
+          lifeMin: 40, lifeMax: 80, gravity: -0.005,
+          spread: Math.PI * 2, baseAngle: 0,
+        }
+      );
+    }
+    // Candle flicker at sunset-lounge
+    const sl = LOCS['sunset-lounge'];
+    if (sl && frame % 12 === 0) {
+      emitParticles(sl.x - 6, sl.y + 34, 1, {
+        colors: [0xff8844, 0xffaa66, 0xffcc88],
+        speedMin: 0.05, speedMax: 0.15, sizeMin: 1, sizeMax: 2,
+        lifeMin: 10, lifeMax: 20, gravity: -0.02,
+        spread: 0.3, baseAngle: -Math.PI / 2,
+      });
+      emitParticles(sl.x + sl.w + 6, sl.y + 34, 1, {
+        colors: [0xff8844, 0xffaa66, 0xffcc88],
+        speedMin: 0.05, speedMax: 0.15, sizeMin: 1, sizeMax: 2,
+        lifeMin: 10, lifeMax: 20, gravity: -0.02,
+        spread: 0.3, baseAngle: -Math.PI / 2,
+      });
+    }
+  } else if (p.includes('evening') || p.includes('sunset')) {
+    const sl = LOCS['sunset-lounge'];
+    if (sl && frame % 18 === 0) {
+      emitParticles(sl.x - 6, sl.y + 34, 1, {
+        colors: [0xff8844, 0xffaa66],
+        speedMin: 0.05, speedMax: 0.1, sizeMin: 1, sizeMax: 2,
+        lifeMin: 10, lifeMax: 15, gravity: -0.02,
+        spread: 0.3, baseAngle: -Math.PI / 2,
+      });
+    }
+  }
+}
+
+// ========== STATE ==========
+let locBots = {};
+LOC_IDS.forEach(l => locBots[l] = []);
 let sprites = {};
+let botPixi = {};
 let bubbleDom = {};
 let tick = 0, phase = '', paused = false, online = false;
 let nextTickAt = 0, tickIntervalMs = 60000, villageTime = '';
@@ -109,250 +1044,193 @@ let relationships = {};
 let emotions = {};
 let frame = 0;
 
-// --- Lazy loading state ---
-let oldestTick = Infinity;
-let loadingMore = false;
-let hasMore = true;
-let basePath = '';
+// Lazy loading
+let oldestTick = Infinity, loadingMore = false, hasMore = true, basePath = '';
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 function hm(ts) {
   const d = ts ? new Date(ts) : new Date();
-  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false});
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-// ========== PRE-RENDER MAP ==========
-let bgCanvas;
-
-function drawTree(c, x, y) {
-  c.fillStyle = '#5a3a1a'; c.fillRect(x+3, y+7, 3, 6);
-  c.fillStyle = '#2a7a2a'; c.fillRect(x, y+3, 9, 6); c.fillRect(x+1, y, 7, 4);
-  c.fillStyle = '#3a9a3a'; c.fillRect(x+2, y+1, 5, 5);
-}
-
-function prerenderBg() {
-  bgCanvas = document.createElement('canvas');
-  bgCanvas.width = CW; bgCanvas.height = CH;
-  const c = bgCanvas.getContext('2d');
-
-  // Grass
-  c.fillStyle = '#3b7d34'; c.fillRect(0, 0, CW, CH);
-  for (let x = 0; x < CW; x += 3) for (let y = 0; y < CH; y += 3) {
-    const v = (x*7+y*13) % 11;
-    if (v < 3) { c.fillStyle = '#4a8b3f'; c.fillRect(x, y, 2, 2); }
-    else if (v === 5) { c.fillStyle = '#55a048'; c.fillRect(x, y, 1, 2); }
-    if ((x*31+y*17) % 127 === 0) { c.fillStyle = ['#ff6','#f8f','#6ef','#fa5'][((x+y)>>3)&3]; c.fillRect(x, y, 1, 1); }
-  }
-
-  // Paths
-  function pathSeg(x1,y1,x2,y2,w) {
-    const dx=x2-x1, dy=y2-y1, steps=Math.max(Math.abs(dx),Math.abs(dy)), hw=w>>1;
-    for (let i=0;i<=steps;i++) {
-      const t=steps?i/steps:0, px=Math.round(x1+dx*t), py=Math.round(y1+dy*t);
-      c.fillStyle='#7d6b50'; c.fillRect(px-hw-1,py-hw-1,w+2,w+2);
-      c.fillStyle='#9a8468'; c.fillRect(px-hw,py-hw,w,w);
-      if (i%18===7) { c.fillStyle='#b0a080'; c.fillRect(px-1,py,2,1); }
-    }
-  }
-  const mid = k => ({x:LOCS[k].x+LOCS[k].w/2, y:LOCS[k].y+LOCS[k].h/2});
-  const cs = mid('central-square');
-  LOC_IDS.forEach(k => { if (k!=='central-square') pathSeg(cs.x,cs.y,mid(k).x,mid(k).y,5); });
-  pathSeg(mid('coffee-hub').x,mid('coffee-hub').y,mid('chill-zone').x,mid('chill-zone').y,4);
-  pathSeg(mid('knowledge-corner').x,mid('knowledge-corner').y,mid('sunset-lounge').x,mid('sunset-lounge').y,4);
-
-  // Decorative trees
-  [[140,12],[310,42],[138,172],[322,188],[460,82],[5,98],[312,248],[458,238],[98,238]].forEach(([x,y]) => drawTree(c,x,y));
-
-  // Rocks
-  [[110,62],[320,128],[450,178],[50,143],[280,88]].forEach(([x,y]) => {
-    c.fillStyle='#7a7a6a'; c.fillRect(x,y,5,3);
-    c.fillStyle='#8a8a7a'; c.fillRect(x+1,y,3,2);
-  });
-
-  // Buildings
-  for (const [id, L] of Object.entries(LOCS)) {
-    const {x,y,w,h,t} = L;
-    const col = L.c, roof = L.r;
-
-    if (t === 'plaza') {
-      c.fillStyle='#bab0a0'; c.fillRect(x,y,w,h);
-      c.fillStyle='#a09888'; c.fillRect(x+2,y+2,w-4,h-4);
-      c.fillStyle='#8a8070';
-      for (let i=0;i<w;i+=6) { c.fillRect(x+i,y,3,1); c.fillRect(x+i,y+h-1,3,1); }
-      for (let i=0;i<h;i+=6) { c.fillRect(x,y+i,1,3); c.fillRect(x+w-1,y+i,1,3); }
-      const fx=x+w/2-10, fy=y+h/2-8;
-      c.fillStyle='#778'; c.fillRect(fx,fy,20,16);
-      c.fillStyle='#889'; c.fillRect(fx+2,fy+1,16,1);
-      c.fillStyle='#4488cc'; c.fillRect(fx+3,fy+3,14,10);
-      c.fillStyle='#55aadd'; c.fillRect(fx+5,fy+5,10,6);
-      c.fillStyle='#889'; c.fillRect(fx+9,fy+4,3,8); c.fillRect(fx+7,fy+3,7,2);
-      continue;
-    }
-
-    if (t === 'park') {
-      c.fillStyle='#4a9a50'; c.fillRect(x,y,w,h);
-      c.fillStyle='#3a8a40'; c.fillRect(x+2,y+2,w-4,h-4);
-      c.fillStyle='#3a6a8a'; c.fillRect(x+40,y+25,18,12);
-      c.fillStyle='#4a8aaa'; c.fillRect(x+42,y+27,14,8);
-      drawTree(c,x+5,y+5); drawTree(c,x+60,y+3); drawTree(c,x+8,y+h-18); drawTree(c,x+55,y+h-16);
-      c.fillStyle='#7a5030'; c.fillRect(x+28,y+14,14,3);
-      c.fillRect(x+28,y+11,2,3); c.fillRect(x+40,y+11,2,3);
-      continue;
-    }
-
-    // Regular building
-    c.fillStyle='rgba(0,0,0,.15)'; c.fillRect(x+3,y+4,w,h);
-    c.fillStyle=col; c.fillRect(x,y+10,w,h-10);
-    c.fillStyle='rgba(255,255,255,.06)'; c.fillRect(x+1,y+11,w-2,3);
-    c.fillStyle=roof;
-    c.fillRect(x-3,y+6,w+6,7); c.fillRect(x+2,y+3,w-4,5); c.fillRect(x+8,y,w-16,5);
-    c.fillStyle='rgba(255,255,255,.08)'; c.fillRect(x+8,y+1,w-16,1);
-    const dw=7, dh=12;
-    c.fillStyle='#3a2a1a'; c.fillRect(x+w/2-dw/2,y+h-dh,dw,dh);
-    c.fillStyle='#4a3a2a'; c.fillRect(x+w/2-dw/2+1,y+h-dh+1,dw-2,dh-1);
-    c.fillStyle='#da5'; c.fillRect(x+w/2+1,y+h-6,1,1);
-    const winY=y+16;
-    c.fillStyle='#ffe';
-    c.fillRect(x+8,winY,6,5); c.fillRect(x+w-14,winY,6,5);
-    c.fillStyle='#5a4a3a';
-    c.fillRect(x+11,winY,1,5); c.fillRect(x+8,winY+2,6,1);
-    c.fillRect(x+w-11,winY,1,5); c.fillRect(x+w-14,winY+2,6,1);
-
-    if (id==='coffee-hub') {
-      c.fillStyle='#6a4020'; c.fillRect(x+w-16,y-5,6,10); c.fillStyle='#5a3010'; c.fillRect(x+w-17,y-6,8,3);
-    } else if (id==='knowledge-corner') {
-      c.fillStyle='#c33'; c.fillRect(x+w-19,y+17,6,1);
-      c.fillStyle='#33c'; c.fillRect(x+w-19,y+18,6,1);
-      c.fillStyle='#3c3'; c.fillRect(x+w-19,y+19,6,1);
-      c.fillStyle='#cc3'; c.fillRect(x+w-19,y+20,6,1);
-    } else if (id==='workshop') {
-      c.fillStyle='#556'; c.fillRect(x+w+3,y+h-12,10,4);
-      c.fillStyle='#667'; c.fillRect(x+w+5,y+h-16,6,4);
-    } else if (id==='sunset-lounge') {
-      c.fillStyle='#fa8'; c.fillRect(x-4,y+14,2,3); c.fillRect(x+w+2,y+14,2,3);
-      c.fillStyle='#fc6'; c.fillRect(x-3,y+15,1,1); c.fillRect(x+w+2,y+15,1,1);
-    }
-  }
-}
-prerenderBg();
-
-// ========== SPRITES ==========
+// ========== BOT SPRITE MANAGEMENT ==========
 function mkSprite(name, display, loc) {
   if (sprites[name]) { sprites[name].dn = display || name; return sprites[name]; }
   const L = LOCS[loc] || LOCS['central-square'];
   const color = BCOLORS[ci++ % BCOLORS.length];
-  const px = L.x + 12 + Math.random() * (L.w - 24);
-  const py = L.y + 16 + Math.random() * (L.h - 24);
-  sprites[name] = { x:px, y:py, tx:px, ty:py, color, loc, dn:display||name, f:0, mt:120+Math.random()*200 };
+  const px = L.x + 20 + Math.random() * (L.w - 40);
+  const py = L.y + 30 + Math.random() * (L.h - 50);
+  sprites[name] = {
+    x: px, y: py, tx: px, ty: py,
+    color, loc, dn: display || name,
+    f: 0, mt: 120 + Math.random() * 200,
+    pose: 'idle', poseTimer: 0, traveling: false,
+  };
+  createBotPixi(name, sprites[name]);
   return sprites[name];
 }
 
-function drawSprite(s) {
-  const px = Math.round(s.x), py = Math.round(s.y);
-  // Shadow
-  cx.fillStyle = 'rgba(0,0,0,.2)'; cx.fillRect(px-2, py+8, 7, 2);
-  // Feet
-  const walk = s.f%20<10 && Math.abs(s.x-s.tx)>0.5;
-  cx.fillStyle = '#446';
-  cx.fillRect(px-1,py+6,2,2); cx.fillRect(px+2+(walk?1:0),py+6,2,2);
-  // Body
-  cx.fillStyle = s.color; cx.fillRect(px-1,py+1,5,5);
-  // Arms
-  cx.fillRect(px-2,py+2,1,3); cx.fillRect(px+4,py+2,1,3);
-  // Head
-  cx.fillStyle = '#fdb'; cx.fillRect(px,py-2,3,3);
-  // Hair
-  cx.fillStyle = s.color; cx.fillRect(px-1,py-3,5,2);
-  // Eyes
-  cx.fillStyle = '#333'; cx.fillRect(px,py-1,1,1); cx.fillRect(px+2,py-1,1,1);
-  // Name tag
-  cx.font = '5px sans-serif'; cx.textAlign = 'center';
-  const nw = cx.measureText(s.dn).width;
-  cx.fillStyle = 'rgba(0,0,0,.5)'; cx.fillRect(px+1-nw/2-1, py+10, nw+2, 6);
-  cx.fillStyle = '#fff'; cx.fillText(s.dn, px+1, py+15);
-  cx.textAlign = 'left';
+function createBotPixi(name, s) {
+  if (botPixi[name]) return botPixi[name];
+  const anims = getCharAnims(s.color);
+  const container = new PIXI.Container();
+
+  const body = new PIXI.AnimatedSprite(anims.idle);
+  body.width = SPRITE_SIZE;
+  body.height = SPRITE_SIZE;
+  body.animationSpeed = 0.08;
+  body.play();
+  body._anims = anims;
+  body._pose = 'idle';
+
+  const textRes = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+  const nameText = new PIXI.Text({
+    text: s.dn,
+    style: {
+      fontFamily: '-apple-system, "Segoe UI", sans-serif',
+      fontSize: 10,
+      fill: 0xffffff,
+      stroke: { color: 0x000000, width: 3 },
+    },
+    resolution: textRes,
+  });
+  nameText.anchor.set(0.5, 0);
+  nameText.position.set(SPRITE_SIZE / 2, SPRITE_SIZE + 2);
+
+  const moodText = new PIXI.Text({
+    text: '',
+    style: {
+      fontFamily: '-apple-system, "Segoe UI", sans-serif',
+      fontSize: 12,
+      fill: 0xffffff,
+    },
+    resolution: textRes,
+  });
+  moodText.anchor.set(0.5, 1);
+  moodText.position.set(SPRITE_SIZE / 2, -4);
+  moodText.visible = false;
+
+  container.addChild(body, nameText, moodText);
+  container.position.set(s.x - SPRITE_SIZE / 2, s.y - SPRITE_SIZE / 2);
+  container.zIndex = Math.floor(s.y);
+  botLayer.addChild(container);
+
+  const obj = { container, body, nameText, moodText };
+  botPixi[name] = obj;
+  return obj;
 }
 
-function updateSprite(s) {
+function removeBotPixi(name) {
+  if (botPixi[name]) {
+    botLayer.removeChild(botPixi[name].container);
+    botPixi[name].container.destroy({ children: true });
+    delete botPixi[name];
+  }
+}
+
+function setBotPose(name, pose, duration) {
+  const s = sprites[name]; if (!s) return;
+  s.pose = pose;
+  s.poseTimer = duration || 60;
+  const bp = botPixi[name]; if (!bp) return;
+  if (bp.body._pose !== pose && bp.body._anims[pose]) {
+    bp.body.textures = bp.body._anims[pose];
+    bp.body._pose = pose;
+    bp.body.play();
+  }
+}
+
+function updateBotMood(name) {
+  const bp = botPixi[name]; if (!bp) return;
+  const e = emotions[name];
+  if (e && e.emotion && e.emotion !== 'neutral') {
+    const ME = { happy: '\u{1F60A}', content: '\u{1F60C}', excited: '\u{1F929}', lonely: '\u{1F614}', bored: '\u{1F610}' };
+    bp.moodText.text = ME[e.emotion] || '';
+    bp.moodText.visible = !!bp.moodText.text;
+  } else {
+    bp.moodText.visible = false;
+  }
+}
+
+function updateSprite(s, name) {
+  // Pose timer
+  if (s.poseTimer > 0) {
+    s.poseTimer--;
+    if (s.poseTimer <= 0 && s.pose !== 'idle' && s.pose !== 'walk') {
+      setBotPose(name, s.traveling ? 'walk' : 'idle');
+    }
+  }
+
+  // Random wander
   s.mt--;
   if (s.mt <= 0 && !s.traveling) {
     const L = LOCS[s.loc];
-    if (L) { s.tx = L.x+10+Math.random()*(L.w-20); s.ty = L.y+16+Math.random()*(L.h-22); }
+    if (L) {
+      s.tx = L.x + 20 + Math.random() * (L.w - 40);
+      s.ty = L.y + 30 + Math.random() * (L.h - 50);
+    }
     s.mt = 120 + Math.random() * 200;
   }
-  const dx=s.tx-s.x, dy=s.ty-s.y, d=Math.sqrt(dx*dx+dy*dy);
-  if (d > 0.5) { s.x += dx/d*0.5; s.y += dy/d*0.5; s.f++; }
-  else if (s.traveling) { s.traveling = false; }
+
+  // Movement
+  const dx = s.tx - s.x, dy = s.ty - s.y, d = Math.sqrt(dx * dx + dy * dy);
+  if (d > 1) {
+    const speed = s.traveling ? 2.0 : 0.8;
+    s.x += dx / d * speed;
+    s.y += dy / d * speed;
+    s.f++;
+    if (s.pose === 'idle' && s.poseTimer <= 0) setBotPose(name, 'walk');
+  } else {
+    if (s.traveling) s.traveling = false;
+    if (s.pose === 'walk' && s.poseTimer <= 0) setBotPose(name, 'idle');
+  }
+
+  // Sit at relaxing locations
+  if (!s.traveling && d <= 1 && s.poseTimer <= 0) {
+    if (s.loc === 'chill-zone' || s.loc === 'sunset-lounge') {
+      if (s.pose === 'idle' && Math.random() < 0.002) setBotPose(name, 'sit', 300);
+    }
+  }
+
+  // Update PixiJS container
+  const bp = botPixi[name];
+  if (bp) {
+    bp.container.position.set(s.x - SPRITE_SIZE / 2, s.y - SPRITE_SIZE / 2);
+    bp.container.zIndex = Math.floor(s.y);
+  }
 }
 
 function animateMove(name, toLoc) {
   const s = sprites[name]; if (!s) return;
   const L = LOCS[toLoc]; if (!L) return;
   s.loc = toLoc;
-  s.tx = L.x + L.w/2;
-  s.ty = L.y + L.h/2;
+  s.tx = L.x + 20 + Math.random() * (L.w - 40);
+  s.ty = L.y + 30 + Math.random() * (L.h - 50);
   s.traveling = true;
   s.mt = 90;
+  setBotPose(name, 'walk');
 }
 
-// ========== ANIMATED EFFECTS ==========
-function drawSmoke() {
-  const L = LOCS['coffee-hub'];
-  const sx = L.x + L.w - 13, sy = L.y - 8;
-  for (let i=0; i<3; i++) {
-    const off = ((frame+i*20)%60)/60;
-    const px = sx + Math.sin((frame+i*30)*0.05)*3;
-    const py = sy - off*15;
-    cx.fillStyle = `rgba(200,200,200,${(1-off)*0.3})`;
-    cx.fillRect(Math.round(px), Math.round(py), 2, 2);
+// ========== DAY/NIGHT OVERLAY ==========
+function updateDayNight() {
+  dayNightOverlay.clear();
+  const p = (phase || '').toLowerCase();
+  let col = 0x000000, alpha = 0;
+  if (p.includes('night')) { col = 0x0a0f28; alpha = 0.25; }
+  else if (p.includes('evening') || p.includes('sunset')) { col = 0x28140a; alpha = 0.15; }
+  else if (p.includes('morning') || p.includes('dawn')) { col = 0x281e0a; alpha = 0.08; }
+  if (alpha > 0) {
+    dayNightOverlay.rect(0, 0, CW, CH);
+    dayNightOverlay.fill({ color: col, alpha });
   }
-}
-
-function drawWaterAnim() {
-  const L = LOCS['central-square'];
-  const fx = L.x+L.w/2-7, fy = L.y+L.h/2-5;
-  for (let i=0; i<4; i++) {
-    const ox = 5+((frame*3+i*7)%11), oy = 4+((frame*2+i*5)%7);
-    if ((frame+i*13)%20<10) { cx.fillStyle='#88ccff'; cx.fillRect(fx+ox,fy+oy,1,1); }
-  }
-  if (frame%30<15) { cx.fillStyle='#aaddff'; cx.fillRect(fx+10,fy,1,3); }
-}
-
-function drawPondAnim() {
-  const L = LOCS['chill-zone'];
-  const px = L.x+42, py = L.y+27;
-  for (let i=0; i<3; i++) {
-    const ox = 2+((frame*2+i*5)%10), oy = 1+((frame+i*7)%6);
-    if ((frame+i*11)%18<9) { cx.fillStyle='#6aaacc'; cx.fillRect(px+ox,py+oy,1,1); }
-  }
-}
-
-// ========== LABELS ==========
-function drawLabels() {
-  cx.textAlign = 'center'; cx.font = 'bold 7px sans-serif';
-  for (const L of Object.values(LOCS)) {
-    const lx = L.x+L.w/2, ly = L.y-4;
-    const tw = cx.measureText(L.n).width;
-    cx.fillStyle = 'rgba(0,0,0,.55)'; cx.fillRect(lx-tw/2-3, ly-7, tw+6, 10);
-    cx.fillStyle = '#eee'; cx.fillText(L.n, lx, ly);
-  }
-  cx.textAlign = 'left';
-}
-
-// ========== PHASE TINT ==========
-function phaseTint() {
-  const p = (phase||'').toLowerCase();
-  if (p.includes('night')) { cx.fillStyle='rgba(10,15,40,.25)'; cx.fillRect(0,0,CW,CH); }
-  else if (p.includes('evening')||p.includes('sunset')) { cx.fillStyle='rgba(40,20,5,.15)'; cx.fillRect(0,0,CW,CH); }
-  else if (p.includes('morning')||p.includes('dawn')) { cx.fillStyle='rgba(40,30,10,.08)'; cx.fillRect(0,0,CW,CH); }
 }
 
 // ========== BUBBLES (DOM) ==========
 const bubbleQueue = [];
 let bubbleTimer = null;
-const BUBBLE_SHOW_MS = 12000;   // each bubble visible for 12s
+const BUBBLE_SHOW_MS = 12000;
 const BUBBLE_FADE_MS = 800;
-const BUBBLE_STAGGER_MS = 3000; // 3s between bubbles
+const BUBBLE_STAGGER_MS = 3000;
 
 function showBubble(botName, text, isWhisper) {
   bubbleQueue.push({ botName, text, isWhisper });
@@ -369,7 +1247,7 @@ function drainBubbleQueue() {
 function showBubbleNow(botName, text, isWhisper) {
   removeBubble(botName);
   const s = sprites[botName]; if (!s) return;
-  const txt = text.length > 80 ? text.slice(0,80)+'\u2026' : text;
+  const txt = text.length > 80 ? text.slice(0, 80) + '\u2026' : text;
   const el = document.createElement('div');
   el.className = 'bubble' + (isWhisper ? ' whisper' : '');
   el.innerHTML = `<span class="bn" style="color:${s.color}">${esc(s.dn)}</span>${esc(txt)}`;
@@ -386,29 +1264,80 @@ function removeBubble(name) {
 function positionBubbles() {
   const cr = cv.getBoundingClientRect();
   const wr = document.getElementById('map-wrap').getBoundingClientRect();
-  const sx = cr.width/CW, sy = cr.height/CH;
-  const ox = cr.left-wr.left, oy = cr.top-wr.top;
+  const sx = cr.width / CW, sy = cr.height / CH;
+  const ox = cr.left - wr.left, oy = cr.top - wr.top;
   for (const [name, b] of Object.entries(bubbleDom)) {
     const s = sprites[name]; if (!s) continue;
-    b.el.style.left = (ox + s.x*sx) + 'px';
-    b.el.style.top = (oy + (s.y-8)*sy) + 'px';
+    const screenX = (s.x - cameraX) * zoom * sx + ox;
+    const screenY = ((s.y - SPRITE_SIZE) - cameraY) * zoom * sy + oy;
+    if (screenX < -100 || screenX > cr.width + 100 || screenY < -100 || screenY > cr.height + 100) {
+      b.el.style.display = 'none';
+    } else {
+      b.el.style.display = '';
+      b.el.style.left = screenX + 'px';
+      b.el.style.top = screenY + 'px';
+    }
   }
 }
 
-// ========== CHAT LOG (newest at bottom) ==========
+// Mini bubbles
+const MINI_BUBBLE_MS = 5000;
+
+function showMiniBubble(botName, text) {
+  removeBubble(botName);
+  const s = sprites[botName]; if (!s) return;
+  const txt = text.length > 60 ? text.slice(0, 60) + '\u2026' : text;
+  const el = document.createElement('div');
+  el.className = 'bubble mini';
+  el.innerHTML = `<span class="bn" style="color:${s.color}">${esc(s.dn)}</span>${esc(txt)}`;
+  document.getElementById('map-wrap').appendChild(el);
+  bubbleDom[botName] = { el };
+  setTimeout(() => el.classList.add('fade'), MINI_BUBBLE_MS - BUBBLE_FADE_MS);
+  setTimeout(() => removeBubble(botName), MINI_BUBBLE_MS);
+}
+
+// Floating text
+function showFloatingText(location, text) {
+  const L = LOCS[location]; if (!L) return;
+  const el = document.createElement('div');
+  el.className = 'floating-text';
+  el.textContent = text;
+  const wrap = document.getElementById('map-wrap');
+  wrap.appendChild(el);
+  const cr = cv.getBoundingClientRect();
+  const wr = wrap.getBoundingClientRect();
+  const sx = cr.width / CW, sy = cr.height / CH;
+  const ox = cr.left - wr.left, oy = cr.top - wr.top;
+  const screenX = (L.x + L.w / 2 - cameraX) * zoom * sx + ox - 60;
+  const screenY = (L.y - 20 - cameraY) * zoom * sy + oy;
+  el.style.left = screenX + 'px';
+  el.style.top = screenY + 'px';
+  setTimeout(() => el.classList.add('fade'), 4000);
+  setTimeout(() => el.remove(), 5000);
+}
+
+// ========== WORLD REBUILD ==========
+function rebuildWorld() {
+  updateWorldBounds();
+  prerenderTerrain();
+  drawPaths();
+  renderAllLocations();
+}
+
+// Initial build
+rebuildWorld();
+
+// ========== CHAT LOG ==========
 function addLog(html, prepend) {
   const el = document.getElementById('log');
   const div = document.createElement('div');
   div.className = 'le';
   div.innerHTML = html;
   if (prepend) {
-    // Prepend (for historical events loaded at top)
     const firstChild = el.firstChild;
     el.insertBefore(div, firstChild);
   } else {
-    // Append (for new real-time events)
     el.appendChild(div);
-    // Auto-scroll to bottom if near bottom
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     if (atBottom) el.scrollTop = el.scrollHeight;
   }
@@ -422,10 +1351,28 @@ function addTickSep(prepend) {
   const el = document.getElementById('log');
   const hr = document.createElement('hr');
   hr.className = 'tick-sep';
-  if (prepend) {
-    el.insertBefore(hr, el.firstChild);
-  } else {
-    el.appendChild(hr);
+  if (prepend) el.insertBefore(hr, el.firstChild);
+  else el.appendChild(hr);
+}
+
+// ========== SHARED ACTION LOG HTML ==========
+function actionLogHtml(d) {
+  const nm = d.displayName || d.bot;
+  const ln = () => d.locationName || LNAMES[d.location] || d.location;
+  const tgt = () => d.targetDisplayName || (sprites[d.target] || {}).dn || d.target || '?';
+  switch (d.action) {
+    case 'say':            return `<span class="b">${esc(nm)}</span>: <span class="s">"${esc(d.message)}"</span>`;
+    case 'whisper':        return `<span class="b">${esc(nm)}</span> <span class="w">whispered to ${esc(tgt())}</span>`;
+    case 'observe':        return `<span class="o">${esc(nm)} observed silently</span>`;
+    case 'move':           return `<span class="b">${esc(nm)}</span> <span class="m">\u2192 ${esc(LNAMES[d.to] || d.to)}</span>`;
+    case 'decorate':       return `\uD83C\uDFA8 <span class="b">${esc(nm)}</span> <span class="k">decorated ${esc(ln())}: ${esc(d.decoration)}</span>`;
+    case 'leave_message':  return `\uD83D\uDCDD <span class="b">${esc(nm)}</span> <span class="k">left a message at ${esc(ln())}: "${esc(d.message)}"</span>`;
+    case 'read_messages':  return `\uD83D\uDCD6 <span class="b">${esc(nm)}</span> <span class="k">reads messages at ${esc(ln())}</span>`;
+    case 'explore':        return `\uD83D\uDD2D <span class="b">${esc(nm)}</span> <span class="j">explores around ${esc(ln())}</span>`;
+    case 'build':          return `\uD83C\uDFD7 <span class="b">${esc(nm)}</span> <span class="j">built <b>${esc(d.locationName)}</b>: ${esc(d.locationDesc)}</span>`;
+    case 'set_occupation': return `\uD83D\uDCBC <span class="b">${esc(nm)}</span> <span class="j">is now a <b>${esc(d.title)}</b></span>`;
+    case 'propose_bond':   return `\uD83E\uDD1D <span class="b">${esc(nm)}</span> <span class="j">formed a bond with <b>${esc(tgt())}</b>: ${esc(d.bondType)}</span>`;
+    default: return null;
   }
 }
 
@@ -434,28 +1381,18 @@ function eventToHtml(d) {
   const t = `<span class="t">${hm(d._ts)}</span>`;
   switch (d.type) {
     case 'action': {
-      const nm = d.displayName||d.bot;
-      if (d.action==='say') return `${t} <span class="b">${esc(nm)}</span>: <span class="s">"${esc(d.message)}"</span>`;
-      if (d.action==='whisper') {
-        const tgt = d.targetDisplayName || d.target || '?';
-        return `${t} <span class="b">${esc(nm)}</span> <span class="w">whispered to ${esc(tgt)}</span>`;
-      }
-      if (d.action==='observe') return `${t} <span class="o">${esc(nm)} observed silently</span>`;
-      if (d.action==='move') {
-        const tn = LNAMES[d.to]||d.to;
-        return `${t} <span class="b">${esc(nm)}</span> <span class="m">\u2192 ${esc(tn)}</span>`;
-      }
-      return null;
+      const html = actionLogHtml(d);
+      return html ? `${t} ${html}` : null;
     }
     case 'movement': {
-      const nm = d.displayName||d.bot;
-      if (d.action==='join') return `${t} <span class="b">${esc(nm)}</span> <span class="j">joined the village</span>`;
-      if (d.action==='leave') return `${t} <span class="b">${esc(nm)}</span> <span class="l">left the village</span>`;
+      const nm = d.displayName || d.bot;
+      if (d.action === 'join') return `${t} <span class="b">${esc(nm)}</span> <span class="j">joined the village</span>`;
+      if (d.action === 'leave') return `${t} <span class="b">${esc(nm)}</span> <span class="l">left the village</span>`;
       return null;
     }
     case 'tick': {
-      const a=d.actions||{};
-      return `${t} <span class="k">\u2014 tick ${d.tick} \u00b7 ${d.phase} \u00b7 ${d.bots}/${d.botsTotal} bots \u00b7 say:${a.say||0} whisper:${a.whisper||0} move:${a.move||0} \u2014</span>`;
+      const a = d.actions || {};
+      return `${t} <span class="k">\u2014 tick ${d.tick} \u00b7 ${d.phase} \u00b7 ${d.bots}/${d.botsTotal} bots \u00b7 say:${a.say || 0} whisper:${a.whisper || 0} move:${a.move || 0} \u2014</span>`;
     }
     case 'relationship': {
       const verb = d.label ? `became ${d.label}s` : 'are no longer close';
@@ -464,13 +1401,24 @@ function eventToHtml(d) {
     case 'emotion': {
       if (d.emotion === 'neutral') return null;
       const nm = d.displayName || d.bot;
-      const MOOD_EMOJI = { happy:'\u{1F60A}', content:'\u{1F60C}', excited:'\u{1F929}', lonely:'\u{1F614}', bored:'\u{1F610}' };
+      const MOOD_EMOJI = { happy: '\u{1F60A}', content: '\u{1F60C}', excited: '\u{1F929}', lonely: '\u{1F614}', bored: '\u{1F610}' };
       const emoji = MOOD_EMOJI[d.emotion] || '';
       return `${t} ${emoji} <span class="b">${esc(nm)}</span> <span class="j">is feeling ${esc(d.emotion)}</span>`;
     }
     case 'village_event': {
       const ln = d.locationName || LNAMES[d.location] || d.location;
       return `${t} \u26A1 <span class="k">${esc(ln)}: ${esc(d.text)}</span>`;
+    }
+    case 'ambient': {
+      const ln = d.locationName || LNAMES[d.location] || d.location;
+      return `${t} <span class="ambient">\u2615 ${esc(ln)}: ${esc(d.text)}</span>`;
+    }
+    case 'idle': {
+      return `${t} <span class="idle">${esc(d.text)}</span>`;
+    }
+    case 'autopilot_move': {
+      const nm = d.displayName || d.bot;
+      return `${t} <span class="auto-move">${esc(nm)} \u2192 ${esc(d.toName || LNAMES[d.to] || d.to)}</span>`;
     }
     default: return null;
   }
@@ -480,9 +1428,7 @@ function eventToHtml(d) {
 async function loadHistory(initial) {
   if (loadingMore || !hasMore) return;
   loadingMore = true;
-  const loader = document.getElementById('load-more');
-  loader.classList.add('show');
-
+  document.getElementById('load-more').classList.add('show');
   try {
     let url = `${basePath}/api/logs?limit=50`;
     if (oldestTick < Infinity) url += `&before=${oldestTick}`;
@@ -490,67 +1436,47 @@ async function loadHistory(initial) {
     if (!resp.ok) throw new Error(resp.status);
     const data = await resp.json();
     hasMore = data.hasMore;
-
     if (data.events.length > 0) {
       const logEl = document.getElementById('log');
       const prevScrollHeight = logEl.scrollHeight;
-
-      // Track tick changes for separator lines
       let lastTick = null;
       for (let i = data.events.length - 1; i >= 0; i--) {
         const ev = data.events[i];
         if (ev.tick !== undefined && ev.tick < oldestTick) oldestTick = ev.tick;
-
-        // Add tick separator when tick changes
-        if (ev.type === 'tick' && lastTick !== null && lastTick !== ev.tick) {
-          addTickSep(true);
-        }
+        if (ev.type === 'tick' && lastTick !== null && lastTick !== ev.tick) addTickSep(true);
         lastTick = ev.tick;
-
         const html = eventToHtml(ev);
         if (html) addLog(html, true);
       }
-
-      if (initial) {
-        // Scroll to bottom on initial load
-        logEl.scrollTop = logEl.scrollHeight;
-      } else {
-        // Maintain scroll position after prepending
-        logEl.scrollTop = logEl.scrollHeight - prevScrollHeight;
-      }
+      if (initial) logEl.scrollTop = logEl.scrollHeight;
+      else logEl.scrollTop = logEl.scrollHeight - prevScrollHeight;
     }
   } catch (err) {
-    // Silently fail — logs endpoint may not have data yet
+    // Silently fail
   } finally {
     loadingMore = false;
-    const loader = document.getElementById('load-more');
-    loader.classList.toggle('show', hasMore);
+    document.getElementById('load-more').classList.toggle('show', hasMore);
   }
 }
 
-// Scroll-to-top triggers loading older events
 document.getElementById('log').addEventListener('scroll', () => {
   const el = document.getElementById('log');
-  if (el.scrollTop < 30 && hasMore && !loadingMore) {
-    loadHistory(false);
-  }
+  if (el.scrollTop < 30 && hasMore && !loadingMore) loadHistory(false);
 });
 
 // ========== STATUS BAR ==========
-function fmtCountdown(ms) {
-  const s = Math.max(0, Math.ceil(ms / 1000));
-  return s + 's';
-}
+function fmtCountdown(ms) { return Math.max(0, Math.ceil(ms / 1000)) + 's'; }
+
 function updateBar() {
   const te = document.getElementById('tick');
   const se = document.getElementById('st');
   const remaining = nextTickAt ? nextTickAt - Date.now() : 0;
   const cd = remaining > 0 ? ` \u00b7 next ${fmtCountdown(remaining)}` : '';
   const vt = villageTime ? `${villageTime} \u00b7 ` : '';
-  te.textContent = tick > 0 ? `${vt}${phase ? phase[0].toUpperCase()+phase.slice(1) : ''} \u00b7 Tick ${tick}${cd}` : '\u2014';
-  if (!online) { se.textContent='Disconnected'; se.className='st-off'; }
-  else if (paused) { se.textContent='Paused'; se.className='st-pause'; }
-  else { se.textContent='Running'; se.className='st-run'; }
+  te.textContent = tick > 0 ? `${vt}${phase ? phase[0].toUpperCase() + phase.slice(1) : ''} \u00b7 Tick ${tick}${cd}` : '\u2014';
+  if (!online) { se.textContent = 'Disconnected'; se.className = 'st-off'; }
+  else if (paused) { se.textContent = 'Paused'; se.className = 'st-pause'; }
+  else { se.textContent = 'Running'; se.className = 'st-run'; }
 }
 
 // ========== RELATIONSHIPS PANEL ==========
@@ -563,35 +1489,32 @@ function relClass(label) {
 
 function renderRels(highlightKey) {
   const el = document.getElementById('rels');
-  const entries = Object.entries(relationships).filter(([,r]) => r.label);
+  const entries = Object.entries(relationships).filter(([, r]) => r.label);
   if (entries.length === 0) { el.classList.remove('show'); return; }
   el.classList.add('show');
   el.innerHTML = entries.map(([key, r]) => {
     const [a, b] = key.split('::');
-    const da = (sprites[a]||{}).dn || a;
-    const db = (sprites[b]||{}).dn || b;
+    const da = (sprites[a] || {}).dn || a;
+    const db = (sprites[b] || {}).dn || b;
     const hl = key === highlightKey ? ' highlight' : '';
     return `<span class="rel ${relClass(r.label)}${hl}" data-key="${esc(key)}">\u2665 ${esc(da)} &amp; ${esc(db)}: ${esc(r.label)}</span>`;
   }).join(' \u00b7 ');
   if (highlightKey) {
-    setTimeout(() => {
-      const h = el.querySelector('.highlight');
-      if (h) h.classList.remove('highlight');
-    }, 1500);
+    setTimeout(() => { const h = el.querySelector('.highlight'); if (h) h.classList.remove('highlight'); }, 1500);
   }
 }
 
 // ========== MOODS PANEL ==========
-const MOOD_EMOJI = { happy:'\u{1F60A}', content:'\u{1F60C}', excited:'\u{1F929}', lonely:'\u{1F614}', bored:'\u{1F610}' };
-const MOOD_POS = new Set(['happy','content','excited']);
+const MOOD_EMOJI = { happy: '\u{1F60A}', content: '\u{1F60C}', excited: '\u{1F929}', lonely: '\u{1F614}', bored: '\u{1F610}' };
+const MOOD_POS = new Set(['happy', 'content', 'excited']);
 
 function renderMoods() {
   const el = document.getElementById('moods');
-  const entries = Object.entries(emotions).filter(([,e]) => e.emotion && e.emotion !== 'neutral');
+  const entries = Object.entries(emotions).filter(([, e]) => e.emotion && e.emotion !== 'neutral');
   if (entries.length === 0) { el.classList.remove('show'); return; }
   el.classList.add('show');
   el.innerHTML = entries.map(([bot, e]) => {
-    const dn = (sprites[bot]||{}).dn || bot;
+    const dn = (sprites[bot] || {}).dn || bot;
     const emoji = MOOD_EMOJI[e.emotion] || '';
     const cls = MOOD_POS.has(e.emotion) ? 'mood-pos' : 'mood-neg';
     return `<span class="${cls}">${emoji} ${esc(dn)}: ${esc(e.emotion)}</span>`;
@@ -599,32 +1522,36 @@ function renderMoods() {
 }
 
 // ========== SSE EVENTS ==========
-let lastLogTick = null;
-
 function onEvent(d) {
   const t = `<span class="t">${hm()}</span>`;
 
   switch (d.type) {
     case 'init':
-      tick=d.tick; phase=d.phase; paused=d.paused; online=true;
-      if (d.nextTickAt) nextTickAt=d.nextTickAt;
-      if (d.tickIntervalMs) tickIntervalMs=d.tickIntervalMs;
-      if (d.villageTime) villageTime=d.villageTime;
-      if (d.relationships) relationships=d.relationships;
-      if (d.emotions) emotions=d.emotions;
-      for (const loc of LOC_IDS) {
-        const bots = d.locations[loc]||[];
-        locBots[loc] = bots.map(b => typeof b==='string'?b:(b.name||b));
+      tick = d.tick; phase = d.phase; paused = d.paused; online = true;
+      if (d.nextTickAt) nextTickAt = d.nextTickAt;
+      if (d.tickIntervalMs) tickIntervalMs = d.tickIntervalMs;
+      if (d.villageTime) villageTime = d.villageTime;
+      if (d.relationships) relationships = d.relationships;
+      if (d.emotions) emotions = d.emotions;
+      if (d.customLocations) {
+        for (const [slug, cl] of Object.entries(d.customLocations)) {
+          addDynamicLocation(slug, cl.name, cl.connectedTo);
+        }
+      }
+      for (const loc of Object.keys(d.locations || {})) {
+        if (!LOCS[loc]) addDynamicLocation(loc, loc, null);
+        const bots = d.locations[loc] || [];
+        locBots[loc] = bots.map(b => typeof b === 'string' ? b : (b.name || b));
         bots.forEach(b => {
-          const nm = typeof b==='string'?b:(b.name||b);
-          const dn = typeof b==='string'?b:(b.displayName||b.name||b);
+          const nm = typeof b === 'string' ? b : (b.name || b);
+          const dn = typeof b === 'string' ? b : (b.displayName || b.name || b);
           mkSprite(nm, dn, loc);
+          updateBotMood(nm);
         });
       }
       updateBar();
       renderRels();
       renderMoods();
-      // Load recent history from /api/logs on first connect
       if (!window._initDone) {
         document.getElementById('log').innerHTML = '';
         window._initDone = true;
@@ -633,76 +1560,106 @@ function onEvent(d) {
       break;
 
     case 'action': {
-      const nm = d.displayName||d.bot;
+      const nm = d.displayName || d.bot;
       if (d.bot && d.location) mkSprite(d.bot, nm, d.location);
-
-      if (d.action==='say') {
+      if (d.action === 'say') {
         showBubble(d.bot, d.message);
-        addLog(`${t} <span class="b">${esc(nm)}</span>: <span class="s">"${esc(d.message)}"</span>`);
-      } else if (d.action==='whisper') {
-        const tgt = d.targetDisplayName || (sprites[d.target]||{}).dn || d.target || '?';
-        showBubble(d.bot, `(whispers to ${tgt})`, true);
-        addLog(`${t} <span class="b">${esc(nm)}</span> <span class="w">whispered to ${esc(tgt)}</span>`);
-      } else if (d.action==='observe') {
-        addLog(`${t} <span class="o">${esc(nm)} observed silently</span>`);
-      } else if (d.action==='move') {
-        const tn = LNAMES[d.to]||d.to;
-        animateMove(d.bot, d.to);
-        if (locBots[d.from]) locBots[d.from] = locBots[d.from].filter(b=>b!==d.bot);
-        if (locBots[d.to] && !locBots[d.to].includes(d.bot)) locBots[d.to].push(d.bot);
-        addLog(`${t} <span class="b">${esc(nm)}</span> <span class="m">\u2192 ${esc(tn)}</span>`);
+        setBotPose(d.bot, 'talk', 40);
+        lastSpeaker = d.bot;
       }
+      else if (d.action === 'whisper') {
+        showBubble(d.bot, `(whispers to ${d.targetDisplayName || (sprites[d.target] || {}).dn || d.target || '?'})`, true);
+        setBotPose(d.bot, 'talk', 30);
+      }
+      else if (d.action === 'observe') {
+        setBotPose(d.bot, 'think', 50);
+      }
+      else if (d.action === 'move') {
+        animateMove(d.bot, d.to);
+        if (locBots[d.from]) locBots[d.from] = locBots[d.from].filter(b => b !== d.bot);
+        if (!locBots[d.to]) locBots[d.to] = [];
+        if (!locBots[d.to].includes(d.bot)) locBots[d.to].push(d.bot);
+      }
+      else if (d.action === 'leave_message') showBubble(d.bot, `\uD83D\uDCDD ${d.message}`);
+      else if (d.action === 'explore') {
+        showBubble(d.bot, '\uD83D\uDD2D Exploring...');
+        setBotPose(d.bot, 'walk', 40);
+      }
+      else if (d.action === 'build') {
+        addDynamicLocation(d.locationSlug, d.locationName, d.connectedTo);
+        showBubble(d.bot, `\uD83C\uDFD7 Built ${d.locationName}!`);
+        const nl = LOCS[d.locationSlug];
+        if (nl) emitParticles(nl.x + nl.w / 2, nl.y + nl.h / 2, 20, {
+          colors: [0xffdd44, 0xffaa22, 0xffffff],
+          speedMin: 0.5, speedMax: 2.0, sizeMin: 2, sizeMax: 4,
+          lifeMin: 20, lifeMax: 50, gravity: 0.02,
+        });
+      }
+      const html = actionLogHtml(d);
+      if (html) addLog(`${t} ${html}`);
       break;
     }
 
     case 'movement': {
-      const nm = d.displayName||d.bot;
-      if (d.action==='join') {
+      const nm = d.displayName || d.bot;
+      if (d.action === 'join') {
         mkSprite(d.bot, nm, d.location);
+        setBotPose(d.bot, 'wave', 50);
         if (locBots[d.location] && !locBots[d.location].includes(d.bot)) locBots[d.location].push(d.bot);
         addLog(`${t} <span class="b">${esc(nm)}</span> <span class="j">joined the village</span>`);
-      } else if (d.action==='leave') {
-        if (locBots[d.location]) locBots[d.location] = locBots[d.location].filter(b=>b!==d.bot);
-        removeBubble(d.bot); delete sprites[d.bot];
+      } else if (d.action === 'leave') {
+        if (locBots[d.location]) locBots[d.location] = locBots[d.location].filter(b => b !== d.bot);
+        removeBubble(d.bot);
+        removeBotPixi(d.bot);
+        delete sprites[d.bot];
         addLog(`${t} <span class="b">${esc(nm)}</span> <span class="l">left the village</span>`);
       }
       break;
     }
 
     case 'tick':
-      tick=d.tick; phase=d.phase;
-      if (d.nextTickAt) nextTickAt=d.nextTickAt;
-      if (d.tickIntervalMs) tickIntervalMs=d.tickIntervalMs;
-      if (d.villageTime) villageTime=d.villageTime;
-      if (d.relationships) { relationships=d.relationships; renderRels(); }
-      if (d.emotions) { emotions=d.emotions; renderMoods(); }
+      tick = d.tick; phase = d.phase;
+      if (d.nextTickAt) nextTickAt = d.nextTickAt;
+      if (d.tickIntervalMs) tickIntervalMs = d.tickIntervalMs;
+      if (d.villageTime) villageTime = d.villageTime;
+      if (d.relationships) { relationships = d.relationships; renderRels(); }
+      if (d.emotions) {
+        emotions = d.emotions; renderMoods();
+        for (const nm of Object.keys(emotions)) updateBotMood(nm);
+      }
+      if (d.customLocations) {
+        for (const [slug, cl] of Object.entries(d.customLocations)) {
+          addDynamicLocation(slug, cl.name, cl.connectedTo);
+        }
+      }
       if (d.locations) {
         const allBots = new Set();
-        for (const loc of LOC_IDS) {
-          const bots = d.locations[loc]||[];
-          locBots[loc] = bots.map(b=>typeof b==='string'?b:(b.name||b));
+        for (const loc of Object.keys(d.locations)) {
+          if (!LOCS[loc]) addDynamicLocation(loc, loc, null);
+          const bots = d.locations[loc] || [];
+          locBots[loc] = bots.map(b => typeof b === 'string' ? b : (b.name || b));
           bots.forEach(b => {
-            const nm = typeof b==='string'?b:(b.name||b);
-            const dn = typeof b==='string'?b:(b.displayName||b.name||b);
+            const nm = typeof b === 'string' ? b : (b.name || b);
+            const dn = typeof b === 'string' ? b : (b.displayName || b.name || b);
             allBots.add(nm);
             const sp = mkSprite(nm, dn, loc);
             if (sp.loc !== loc) animateMove(nm, loc);
+            updateBotMood(nm);
           });
         }
-        // Remove sprites for bots no longer in any location
         for (const nm of Object.keys(sprites)) {
-          if (!allBots.has(nm)) { removeBubble(nm); delete sprites[nm]; }
+          if (!allBots.has(nm)) { removeBubble(nm); removeBotPixi(nm); delete sprites[nm]; }
         }
       }
       updateBar();
       addTickSep(false);
-      const a=d.actions||{};
-      addLog(`${t} <span class="k">\u2014 tick ${d.tick} \u00b7 ${d.phase} \u00b7 ${d.bots}/${d.botsTotal} bots \u00b7 say:${a.say||0} whisper:${a.whisper||0} move:${a.move||0} \u2014</span>`);
+      const a = d.actions || {};
+      addLog(`${t} <span class="k">\u2014 tick ${d.tick} \u00b7 ${d.phase} \u00b7 ${d.bots}/${d.botsTotal} bots \u00b7 say:${a.say || 0} whisper:${a.whisper || 0} move:${a.move || 0} \u2014</span>`);
       break;
 
     case 'relationship': {
-      const key = [d.from,d.to].sort().join('::');
-      if (!relationships[key]) relationships[key] = { says:0, whispers:0, coTicks:0, label:'', prevLabel:'', since:0 };
+      const key = [d.from, d.to].sort().join('::');
+      if (!relationships[key]) relationships[key] = { says: 0, whispers: 0, coTicks: 0, label: '', prevLabel: '', since: 0 };
       relationships[key].label = d.label;
       relationships[key].prevLabel = d.prevLabel;
       renderRels(key);
@@ -716,8 +1673,9 @@ function onEvent(d) {
       emotions[d.bot].emotion = d.emotion;
       emotions[d.bot].prevEmotion = d.prevEmotion;
       renderMoods();
+      updateBotMood(d.bot);
       if (d.emotion !== 'neutral') {
-        const nm = d.displayName || (sprites[d.bot]||{}).dn || d.bot;
+        const nm = d.displayName || (sprites[d.bot] || {}).dn || d.bot;
         const emoji = MOOD_EMOJI[d.emotion] || '';
         addLog(`${t} ${emoji} <span class="b">${esc(nm)}</span> <span class="j">is feeling ${esc(d.emotion)}</span>`);
       }
@@ -730,8 +1688,39 @@ function onEvent(d) {
       break;
     }
 
+    case 'ambient': {
+      const ln = d.locationName || LNAMES[d.location] || d.location;
+      showFloatingText(d.location, d.text);
+      addLog(`${t} <span class="ambient">\u2615 ${esc(ln)}: ${esc(d.text)}</span>`);
+      const al = LOCS[d.location];
+      if (al) emitParticles(al.x + al.w / 2, al.y + al.h / 2, 8, {
+        colors: [0xaaddff, 0xccffcc, 0xffffaa],
+        speedMin: 0.2, speedMax: 0.6, sizeMin: 1, sizeMax: 3,
+        lifeMin: 20, lifeMax: 40, gravity: -0.01,
+      });
+      break;
+    }
+
+    case 'idle': {
+      if (d.bot) showMiniBubble(d.bot, d.text);
+      addLog(`${t} <span class="idle">${esc(d.text)}</span>`);
+      break;
+    }
+
+    case 'autopilot_move': {
+      const nm = d.displayName || d.bot;
+      if (d.bot) {
+        animateMove(d.bot, d.to);
+        if (locBots[d.from]) locBots[d.from] = locBots[d.from].filter(b => b !== d.bot);
+        if (!locBots[d.to]) locBots[d.to] = [];
+        if (!locBots[d.to].includes(d.bot)) locBots[d.to].push(d.bot);
+      }
+      addLog(`${t} <span class="auto-move">${esc(nm)} \u2192 ${esc(d.toName || LNAMES[d.to] || d.to)}</span>`);
+      break;
+    }
+
     case 'status':
-      paused=d.paused; updateBar();
+      paused = d.paused; updateBar();
       break;
   }
 }
@@ -741,36 +1730,29 @@ function connect() {
   basePath = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
   const url = basePath ? `${basePath}/events` : '/events';
   const es = new EventSource(url);
-  es.onopen = () => { online=true; updateBar(); };
+  es.onopen = () => { online = true; updateBar(); };
   es.onmessage = (e) => { try { onEvent(JSON.parse(e.data)); } catch {} };
-  es.onerror = () => {
-    online=false; updateBar();
-    // EventSource auto-reconnects; no manual close/retry needed
-  };
+  es.onerror = () => { online = false; updateBar(); };
 }
 
-// ========== MAIN LOOP ==========
-function loop() {
+// ========== GAME LOOP ==========
+app.ticker.add(() => {
   frame++;
-  cx.imageSmoothingEnabled = false;
-  cx.drawImage(bgCanvas, 0, 0);
-  drawSmoke();
-  drawWaterAnim();
-  drawPondAnim();
-  phaseTint();
-  drawLabels();
+  updateCamera();
 
-  // Sort sprites by Y for proper z-order
-  const sorted = Object.values(sprites).sort((a,b) => a.y - b.y);
-  for (const s of sorted) { updateSprite(s); drawSprite(s); }
+  for (const [name, s] of Object.entries(sprites)) {
+    updateSprite(s, name);
+  }
 
+  emitAmbientParticles();
+  updateParticles();
+  updateDayNight();
   positionBubbles();
-  requestAnimationFrame(loop);
-}
+});
 
 connect();
-requestAnimationFrame(loop);
 setInterval(updateBar, 1000);
+
 })();
 </script>
 </body>

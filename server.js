@@ -26,6 +26,7 @@ import { generateWorld, placeInitialResources, mulberry32, randomEdgeTile } from
 import { getDayPhase } from './games/survival/scene.js';
 import { survivalTick, fastTick as survivalFastTick } from './games/survival/tick.js';
 import { socialTick } from './games/social-village/tick.js';
+import { runSocialFastTick } from './games/social-village/autopilot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -77,6 +78,11 @@ let state = {
   eventState: {},
   spiceState: {},
   stagnation: {},
+  locationState: {},
+  customLocations: {},
+  occupations: {},
+  bonds: {},
+  explorations: {},
 };
 
 let tickInProgress = false;
@@ -108,13 +114,27 @@ async function loadState() {
       eventState: loaded.eventState || {},
       spiceState: loaded.spiceState || {},
       stagnation: loaded.stagnation || {},
+      locationState: loaded.locationState || {},
+      customLocations: loaded.customLocations || {},
+      occupations: loaded.occupations || {},
+      bonds: loaded.bonds || {},
+      explorations: loaded.explorations || {},
+      fastTickSummary: loaded.fastTickSummary || {},
+      autopilotState: loaded.autopilotState || { ambientCooldowns: {}, moveCooldowns: {} },
     };
+    // Initialize schema locations
     for (const loc of gameConfig.locationSlugs) {
       if (!state.locations[loc]) state.locations[loc] = [];
       if (!state.publicLogs[loc]) state.publicLogs[loc] = [];
       if (!state.emptyTicks[loc]) state.emptyTicks[loc] = 0;
     }
-    console.log(`[village] State loaded from ${source}: tick=${state.clock.tick} phase=${state.clock.phase}`);
+    // Initialize custom locations (built by bots)
+    for (const loc of Object.keys(state.customLocations)) {
+      if (!state.locations[loc]) state.locations[loc] = [];
+      if (!state.publicLogs[loc]) state.publicLogs[loc] = [];
+      if (!state.emptyTicks[loc]) state.emptyTicks[loc] = 0;
+    }
+    console.log(`[village] State loaded from ${source}: tick=${state.clock.tick} phase=${state.clock.phase} customLocations=${Object.keys(state.customLocations).length}`);
   }
 
   function applyGridState(loaded, source) {
@@ -188,6 +208,11 @@ async function loadState() {
       state.emptyTicks[loc] = 0;
     }
     state.relationships = {};
+    state.locationState = {};
+    state.customLocations = {};
+    state.occupations = {};
+    state.bonds = {};
+    state.explorations = {};
   }
   console.log('[village] Fresh state initialized');
 }
@@ -251,6 +276,12 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 
+// --- Helper: all location slugs (schema + custom) ---
+
+function allLocationSlugs() {
+  return [...gameConfig.locationSlugs, ...Object.keys(state.customLocations || {})];
+}
+
 // --- Remove bot helper (shared by /api/leave, dead bot detection, startup recovery) ---
 
 function removeBot(botName, reason) {
@@ -268,8 +299,9 @@ function removeBot(botName, reason) {
       delete state.bots[botName];
     }
   } else {
-    // Social game: remove from all locations
-    for (const loc of gameConfig.locationSlugs) {
+    // Social game: remove from all locations (including custom)
+    for (const loc of allLocationSlugs()) {
+      if (!state.locations[loc]) continue;
       const idx = state.locations[loc].indexOf(botName);
       if (idx !== -1) {
         state.locations[loc].splice(idx, 1);
@@ -277,7 +309,7 @@ function removeBot(botName, reason) {
           type: 'movement', bot: botName, displayName,
           action: 'leave', location: loc, tick: state.clock.tick,
         });
-        state.publicLogs[loc].push({
+        state.publicLogs[loc]?.push({
           bot: botName, action: 'say',
           message: `*${displayName} has left the village.*`,
         });
@@ -299,8 +331,8 @@ async function recoverParticipants() {
   if (isGridGame) {
     for (const name of Object.keys(state.bots)) botsInState.add(name);
   } else {
-    for (const loc of gameConfig.locationSlugs) {
-      for (const name of state.locations[loc]) botsInState.add(name);
+    for (const loc of allLocationSlugs()) {
+      for (const name of (state.locations[loc] || [])) botsInState.add(name);
     }
   }
 
@@ -474,12 +506,24 @@ function buildTickContext(tickStart) {
   };
 }
 
-// --- Fast tick (autopilot, grid game only) ---
+// --- Fast tick (autopilot) ---
 
 function fastTick() {
-  if (!isGridGame || !state.terrain) return;
   if (tickInProgress) return; // skip if slow tick is running
-  survivalFastTick(buildTickContext(Date.now()));
+
+  if (isGridGame) {
+    if (!state.terrain) return;
+    survivalFastTick(buildTickContext(Date.now()));
+  } else {
+    socialFastTick();
+  }
+}
+
+function socialFastTick() {
+  const { events } = runSocialFastTick(state, gameConfig, participants);
+  for (const ev of events) {
+    broadcastEvent({ ...ev, tick: state.clock.tick, _ts: new Date().toISOString() });
+  }
 }
 
 // --- Main tick ---
@@ -619,7 +663,7 @@ const server = createServer(async (req, res) => {
         }
       }
     } else {
-      const alreadyInLocation = gameConfig.locationSlugs.some(loc => state.locations[loc].includes(botName));
+      const alreadyInLocation = allLocationSlugs().some(loc => (state.locations[loc] || []).includes(botName));
       if (!alreadyInLocation) {
         state.locations[gameConfig.spawnLocation].push(botName);
         broadcastEvent({
@@ -758,6 +802,7 @@ const server = createServer(async (req, res) => {
       });
     } else {
       const initVt = getVillageTime(gameConfig.timezone);
+      const initAllLocs = allLocationSlugs();
       initData = JSON.stringify({
         type: 'init',
         gameType: 'social',
@@ -774,19 +819,23 @@ const server = createServer(async (req, res) => {
           version: gameConfig.raw.version,
         },
         locations: Object.fromEntries(
-          gameConfig.locationSlugs.map(l => [l, (state.locations[l] || []).map(b => ({
+          initAllLocs.map(l => [l, (state.locations[l] || []).map(b => ({
             name: b, displayName: participants.get(b)?.displayName || b,
           }))])
         ),
         relationships: state.relationships,
         emotions: state.emotions,
         publicLogs: Object.fromEntries(
-          gameConfig.locationSlugs.filter(l => (state.publicLogs[l] || []).length > 0)
+          initAllLocs.filter(l => (state.publicLogs[l] || []).length > 0)
             .map(l => [l, state.publicLogs[l].map(e => ({
               ...e,
               displayName: participants.get(e.bot)?.displayName || e.bot,
             }))])
         ),
+        customLocations: state.customLocations || {},
+        occupations: state.occupations || {},
+        bonds: state.bonds || {},
+        autopilotEnabled: !!gameConfig.raw.autopilot,
       });
     }
     res.write(`data: ${initData}\n\n`);
@@ -810,7 +859,7 @@ const server = createServer(async (req, res) => {
 
     // Filter events by current game type so survival events don't show in social UI and vice versa
     const SURVIVAL_TYPES = new Set(['survival_event', 'survival_tick', 'fast_tick', 'thinking']);
-    const SOCIAL_TYPES = new Set(['action', 'village_event', 'conversation_spice']);
+    const SOCIAL_TYPES = new Set(['action', 'village_event', 'conversation_spice', 'ambient', 'idle', 'autopilot_move']);
     function matchesGameType(ev) {
       if (isGridGame) {
         if (SOCIAL_TYPES.has(ev.type)) return false;
@@ -885,11 +934,9 @@ function startGameLoop() {
   setTimeout(() => tick(), 5000);
   tickTimer = setInterval(() => tick(), TICK_INTERVAL_MS);
 
-  // Start fast tick for grid games (autopilot)
-  if (isGridGame) {
-    fastTickTimer = setInterval(() => fastTick(), FAST_TICK_MS);
-    console.log(`[village] Fast tick started: ${FAST_TICK_MS}ms interval`);
-  }
+  // Start fast tick (autopilot for both grid and social games)
+  fastTickTimer = setInterval(() => fastTick(), FAST_TICK_MS);
+  console.log(`[village] Fast tick started: ${FAST_TICK_MS}ms interval`);
 }
 
 // --- Graceful shutdown ---

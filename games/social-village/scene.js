@@ -37,6 +37,17 @@ function renderTemplate(template, vars) {
 }
 
 /**
+ * Append a labeled section to lines if items is non-empty.
+ * Adds blank line before header, renders each item, adds trailing blank line.
+ */
+function addSection(lines, header, items, renderItem) {
+  if (!items || items.length === 0) return;
+  lines.push('');
+  lines.push(header);
+  for (const item of items) lines.push(renderItem(item));
+}
+
+/**
  * Build a scene prompt for a specific bot.
  *
  * @param {object} opts
@@ -57,6 +68,7 @@ function renderTemplate(template, vars) {
  * @param {string} [opts.villageMemory] - Summarized village memory to include in prompt
  * @param {string} [opts.villageEvent] - Active village event text
  * @param {string} [opts.conversationSpice] - Active conversation spice text
+ * @param {string[]} [opts.fastTickSummary] - Recent autopilot activity lines
  * @param {object} opts.gameConfig - Loaded game configuration
  * @returns {string} The scene prompt
  */
@@ -78,7 +90,9 @@ export function buildScene({
   villageMemory = '',
   villageEvent = '',
   conversationSpice = '',
+  fastTickSummary = [],
   gameConfig,
+  state = {},
 }) {
   const { locationNames, locationFlavors, phaseDescriptions, timezone,
     emotions: emotionDefs, tools, sceneLabels } = gameConfig;
@@ -87,14 +101,30 @@ export function buildScene({
   // Time + phase + location
   const vt = getVillageTime(timezone);
   lines.push(`${phaseDescriptions[vt.phase] || phaseDescriptions[Object.keys(phaseDescriptions)[0]]} ${vt.dayStr}，${vt.timeStr}。`);
-  lines.push(`你在 **${locationNames[location] || location}**。${locationFlavors[location] || ''}`);
+  // Location name — check custom locations too
+  const locName = locationNames[location] || state.customLocations?.[location]?.name || location;
+  const locFlavor = locationFlavors[location] || state.customLocations?.[location]?.flavor || '';
+  lines.push(`你在 **${locName}**。${locFlavor}`);
+
+  // Decorations and messages at this location
+  const ls = state.locationState?.[location];
+  addSection(lines, sceneLabels.decorationsHeader, ls?.decorations?.slice(-5),
+    d => `- ${botDisplayNames[d.bot] || d.bot}: ${d.text}`);
+  addSection(lines, sceneLabels.messagesHeader, ls?.messages?.slice(-5),
+    m => `- "${m.text}" —${botDisplayNames[m.bot] || m.bot}`);
+
   lines.push('');
 
-  // Who's here
+  // Who's here (with occupations)
   if (botsHere.length === 0) {
     lines.push(sceneLabels.aloneHere);
   } else {
-    const names = botsHere.map(b => botDisplayNames[b] || b).join('、');
+    const names = botsHere.map(b => {
+      const dn = botDisplayNames[b] || b;
+      const occ = state.occupations?.[b];
+      if (occ) return `${dn}${renderTemplate(sceneLabels.occupationTag, { title: occ.title })}`;
+      return dn;
+    }).join('、');
     lines.push(renderTemplate(sceneLabels.alsoHere, { names }));
   }
   lines.push('');
@@ -113,6 +143,38 @@ export function buildScene({
     if (relLines.length > 0) {
       lines.push(sceneLabels.relationships);
       lines.push(...relLines);
+      lines.push('');
+    }
+  }
+
+  // Bonds (life sim)
+  if (state.bonds) {
+    const bondLines = [];
+    for (const [key, bond] of Object.entries(state.bonds)) {
+      const [a, b] = key.split('::');
+      if (a !== botName && b !== botName) continue;
+      const other = a === botName ? b : a;
+      const otherDisplay = botDisplayNames[other] || other;
+      bondLines.push(renderTemplate(sceneLabels.bondFormat, { name1: botDisplayName, name2: otherDisplay, bondType: bond.type }));
+    }
+    if (bondLines.length > 0) {
+      lines.push(sceneLabels.bondsHeader);
+      lines.push(...bondLines);
+      lines.push('');
+    }
+  }
+
+  // Own occupation
+  if (state.occupations?.[botName]) {
+    lines.push(`你的职业：**${state.occupations[botName].title}**`);
+    lines.push('');
+  }
+
+  // Exploration hint
+  if (state.explorations?.[botName]) {
+    const expl = state.explorations[botName];
+    if (tick - expl.tick <= 5) {
+      lines.push(sceneLabels.exploreHint);
       lines.push('');
     }
   }
@@ -161,6 +223,15 @@ export function buildScene({
     lines.push('');
   }
 
+  // Recent autopilot activity (from fast ticks between LLM ticks)
+  if (fastTickSummary.length > 0) {
+    lines.push(sceneLabels.recentActivity);
+    for (const item of fastTickSummary.slice(-10)) {
+      lines.push(`- ${item}`);
+    }
+    lines.push('');
+  }
+
   // Recent public conversation
   const recentLog = (publicLog || []).slice(-sceneHistoryCap);
   if (recentLog.length > 0) {
@@ -203,16 +274,24 @@ export function buildScene({
   lines.push('');
 
   if (canMove) {
-    // Available locations (for move)
+    // Available locations (for move) — include custom locations
     const { locationSlugs } = gameConfig;
-    const otherLocations = locationSlugs.filter(l => l !== location);
-    lines.push(`${sceneLabels.availableLocations}${otherLocations.map(l => `${l}（${locationNames[l]}）`).join('、')}`);
+    const customSlugs = Object.keys(state.customLocations || {});
+    const allSlugs = [...locationSlugs, ...customSlugs];
+    const otherLocations = allSlugs.filter(l => l !== location);
+    lines.push(`${sceneLabels.availableLocations}${otherLocations.map(l => {
+      const n = locationNames[l] || state.customLocations?.[l]?.name || l;
+      return `${l}（${n}）`;
+    }).join('、')}`);
     lines.push('');
     lines.push(sceneLabels.moveExclusive);
   } else {
     lines.push(sceneLabels.maxActions);
   }
   lines.push(sceneLabels.behaviorGuidance);
+  if (sceneLabels.journalGuidance) {
+    lines.push(sceneLabels.journalGuidance);
+  }
 
   return lines.join('\n');
 }
