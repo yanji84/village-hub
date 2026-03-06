@@ -949,6 +949,26 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Serve game assets (images, etc.)
+  if (path.startsWith('/assets/')) {
+    const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.json': 'application/json' };
+    const safeName = path.slice('/assets/'.length).replace(/\.\./g, '');
+    const ext = safeName.slice(safeName.lastIndexOf('.'));
+    const filePath = join(__dirname, 'games', VILLAGE_GAME, 'assets', safeName);
+    try {
+      const data = await readFile(filePath);
+      res.writeHead(200, {
+        'Content-Type': MIME[ext] || 'application/octet-stream',
+        'Cache-Control': 'public, max-age=3600',
+      });
+      res.end(data);
+    } catch {
+      res.writeHead(404);
+      res.end('Not found');
+    }
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 });

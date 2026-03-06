@@ -11,7 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const paths = require('../../lib/paths');
+const paths = require('../../../lib/paths');
 
 // --- Seeded PRNG (same mulberry32 used elsewhere in the codebase) ---
 
