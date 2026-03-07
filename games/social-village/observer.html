@@ -34,15 +34,13 @@ canvas{display:block}
 .rel{transition:background .6s}
 .rel.highlight{background:rgba(255,215,0,.15)}
 .rel-acq{color:#777}.rel-friend{color:#4a9}.rel-good{color:#5cb85c}.rel-best{color:#daa520}
-#moods{display:none!important}
-.mood-pos{color:#6a9a6a}.mood-neg{color:#888}
 #log{flex:1;overflow-y:auto;padding:6px 10px;min-height:0}
 #load-more{text-align:center;padding:4px;font:10px -apple-system,sans-serif;color:#333;display:none}
 #load-more.show{display:block}
 .le{font:11px/1.6 -apple-system,'Segoe UI',sans-serif;color:#555}
 .le .t{color:#333}.le .b{color:#4a9;font-weight:600}.le .s{color:#999}
 .le .w{color:#7af;font-style:italic}.le .m{color:#da5}
-.le .j{color:#4a9}.le .l{color:#e55}.le .o{color:#555;font-style:italic}.le .k{color:#333}
+.le .j{color:#4a9}.le .l{color:#e55}.le .k{color:#333}
 .le .ambient{color:#5a7a5a;font-style:italic;font-size:10px}
 .le .idle{color:#6a6a7a;font-style:italic}
 .le .auto-move{color:#8a7a5a;font-style:italic}
@@ -71,7 +69,6 @@ canvas{display:block}
   <div id="chat">
     <div id="chat-header">
       <div id="rels"></div>
-      <div id="moods"></div>
     </div>
     <div id="load-more">Loading older...</div>
     <div id="log"></div>
@@ -79,13 +76,25 @@ canvas{display:block}
 </div>
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.min.js"></script>
 <script>
-(async () => {
+window.onerror = function(msg, url, line, col, err) {
+  document.getElementById('st').textContent = 'JS Error: ' + msg;
+  console.error('[observer] Error:', msg, url, line, col, err);
+};
+window.addEventListener('unhandledrejection', function(e) {
+  document.getElementById('st').textContent = 'JS Error: ' + e.reason;
+  console.error('[observer] Unhandled rejection:', e.reason);
+});
+</script>
+<script type="module">
+import { hashStr, hexToInt, hexToRgb, darken } from './assets/observer-utils.js?v=3';
+import { initTerrain, updateVisibleChunks, invalidateChunksNearLocation, clearAllChunks, setFrame as setTerrainFrame } from './assets/observer-terrain.js?v=3';
+import { loadCharacterSheet, getCharAnims, SPRITE_SIZE, BCOLORS } from './assets/observer-characters.js?v=3';
+import { initParticles, emitParticles, updateParticles, emitAmbientParticles, setParticleState } from './assets/observer-particles.js?v=3';
+import { initCamera, updateCamera, getCameraState, getCameraRect, setFollowTarget, updateFollowSelect, setLastSpeaker } from './assets/observer-camera.js?v=3';
 
+(async () => {
 // ========== CONSTANTS ==========
 const CW = 960, CH = 540;
-const SPRITE_SIZE = 32;
-const BCOLORS = ['#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#1abc9c','#e67e22','#e91e63','#00bcd4','#8bc34a','#ff5722','#607d8b'];
-let ci = 0;
 
 // ========== WORLD LAYOUT ==========
 const BASE_LOCATIONS = {
@@ -110,7 +119,7 @@ let LOCS = {};
 let LOC_IDS = [];
 let LNAMES = {};
 let edges = [...BASE_EDGES];
-let worldW = 2000, worldH = 1500;
+// World is unbounded — chunks generate on demand at any coordinates
 
 function initLocations() {
   LOCS = {};
@@ -123,11 +132,7 @@ function initLocations() {
 }
 initLocations();
 
-function hashStr(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  return h;
-}
+// hashStr is now inlined from observer-utils.js
 
 function addDynamicLocation(slug, name, connectedTo) {
   if (LOCS[slug]) return;
@@ -142,8 +147,10 @@ function addDynamicLocation(slug, name, connectedTo) {
   LOC_IDS = Object.keys(LOCS);
   LNAMES[slug] = name;
   if (!locBots[slug]) locBots[slug] = [];
-  computeLayout();
-  rebuildWorld();
+  computeLayoutIncremental(slug);
+  drawLocationGraphics(slug, LOCS[slug]);
+  addSinglePath(parentId, slug);
+  invalidateChunksNearLocation(LOCS[slug]);
 }
 
 // ========== FORCE-DIRECTED LAYOUT ==========
@@ -184,18 +191,52 @@ function computeLayout() {
       A.y += fy * 0.1;
     }
   }
-  updateWorldBounds();
+  shiftToPositive();
 }
 
-function updateWorldBounds() {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+function computeLayoutIncremental(slug) {
+  const A = LOCS[slug];
+  if (!A) return;
+  const nodes = Object.entries(LOCS);
+  for (let iter = 0; iter < 40; iter++) {
+    let fx = 0, fy = 0;
+    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+    // Repulsion from all other nodes
+    for (const [id, B] of nodes) {
+      if (id === slug) continue;
+      const bx = B.x + B.w / 2, by = B.y + B.h / 2;
+      const dx = ax - bx, dy = ay - by;
+      const d2 = dx * dx + dy * dy + 1;
+      const d = Math.sqrt(d2);
+      const force = 50000 / d2;
+      fx += (dx / d) * force;
+      fy += (dy / d) * force;
+    }
+    // Attraction along connected edges
+    for (const [eA, eB] of edges) {
+      let other = null;
+      if (eA === slug) other = LOCS[eB];
+      else if (eB === slug) other = LOCS[eA];
+      if (!other) continue;
+      const bx = other.x + other.w / 2, by = other.y + other.h / 2;
+      const dx = bx - ax, dy = by - ay;
+      const d = Math.sqrt(dx * dx + dy * dy) + 1;
+      const force = (d - 350) * 0.05;
+      fx += (dx / d) * force;
+      fy += (dy / d) * force;
+    }
+    A.x += fx * 0.1;
+    A.y += fy * 0.1;
+  }
+  shiftToPositive();
+}
+
+function shiftToPositive() {
+  let minX = Infinity, minY = Infinity;
   for (const L of Object.values(LOCS)) {
     minX = Math.min(minX, L.x);
     minY = Math.min(minY, L.y);
-    maxX = Math.max(maxX, L.x + L.w);
-    maxY = Math.max(maxY, L.y + L.h);
   }
-  // Ensure all coords have positive margin
   if (minX < 200) {
     const shift = 200 - minX;
     for (const L of Object.values(LOCS)) L.x += shift;
@@ -204,15 +245,19 @@ function updateWorldBounds() {
     const shift = 200 - minY;
     for (const L of Object.values(LOCS)) L.y += shift;
   }
-  maxX = -Infinity; maxY = -Infinity;
+}
+
+function computePopulatedBounds() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const L of Object.values(LOCS)) {
+    minX = Math.min(minX, L.x);
+    minY = Math.min(minY, L.y);
     maxX = Math.max(maxX, L.x + L.w);
     maxY = Math.max(maxY, L.y + L.h);
   }
-  worldW = Math.max(2000, maxX + 400);
-  worldH = Math.max(1500, maxY + 400);
+  return { minX, minY, maxX, maxY };
 }
-updateWorldBounds();
+shiftToPositive();
 
 // ========== PIXI SETUP ==========
 if (PIXI.TextureSource && PIXI.TextureSource.defaultOptions) {
@@ -234,7 +279,8 @@ document.getElementById('map-wrap').appendChild(cv);
 // Container hierarchy
 const worldContainer = new PIXI.Container();
 const terrainLayer = new PIXI.Container();
-const pathGraphics = new PIXI.Graphics();
+const pathLayer = new PIXI.Container();
+const pathObjects = new Map(); // key "idA::idB" (sorted) → PIXI.Graphics
 const locationLayer = new PIXI.Container();
 const effectsLayer = new PIXI.Container();
 const botLayer = new PIXI.Container();
@@ -242,7 +288,7 @@ botLayer.sortableChildren = true;
 const overlayContainer = new PIXI.Container();
 const dayNightOverlay = new PIXI.Graphics();
 
-worldContainer.addChild(terrainLayer, pathGraphics, locationLayer, effectsLayer, botLayer);
+worldContainer.addChild(terrainLayer, pathLayer, locationLayer, effectsLayer, botLayer);
 overlayContainer.addChild(dayNightOverlay);
 app.stage.addChild(worldContainer, overlayContainer);
 
@@ -258,302 +304,11 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
-// ========== CAMERA ==========
-let cameraX = 0, cameraY = 0;
-let cameraTargetX = 0, cameraTargetY = 0;
-let zoom = 1.0, targetZoom = 1.0;
-let dragging = false, dragStartX = 0, dragStartY = 0, dragCamStartX = 0, dragCamStartY = 0;
-let autoFollow = false, lastSpeaker = null, followTarget = '';
+// Camera — extracted to observer-camera.js (see imports above)
 
-function clampCamera() {
-  const viewW = CW / zoom;
-  const viewH = CH / zoom;
-  const maxX = Math.max(0, worldW - viewW);
-  const maxY = Math.max(0, worldH - viewH);
-  cameraX = Math.max(0, Math.min(cameraX, maxX));
-  cameraY = Math.max(0, Math.min(cameraY, maxY));
-}
-
-function centerCameraOn(wx, wy) {
-  cameraTargetX = wx - CW / (2 * zoom);
-  cameraTargetY = wy - CH / (2 * zoom);
-  cameraX = cameraTargetX;
-  cameraY = cameraTargetY;
-  clampCamera();
-  cameraTargetX = cameraX;
-  cameraTargetY = cameraY;
-}
-
-// Center on central-square initially
-centerCameraOn(
-  LOCS['central-square'].x + LOCS['central-square'].w / 2,
-  LOCS['central-square'].y + LOCS['central-square'].h / 2
-);
-
-// Mouse drag
-cv.addEventListener('mousedown', (e) => {
-  if (e.button === 0) {
-    dragging = true;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    dragCamStartX = cameraX;
-    dragCamStartY = cameraY;
-  }
-});
-
-cv.addEventListener('mousemove', (e) => {
-  if (!dragging) return;
-  const rect = cv.getBoundingClientRect();
-  const scaleX = CW / rect.width / zoom;
-  const scaleY = CH / rect.height / zoom;
-  const dx = (e.clientX - dragStartX) * scaleX;
-  const dy = (e.clientY - dragStartY) * scaleY;
-  cameraX = dragCamStartX - dx;
-  cameraY = dragCamStartY - dy;
-  cameraTargetX = cameraX;
-  cameraTargetY = cameraY;
-  clampCamera();
-  if (Math.abs(e.clientX - dragStartX) > 4 || Math.abs(e.clientY - dragStartY) > 4) {
-    autoFollow = false;
-    setFollowTarget('');
-  }
-});
-
-cv.addEventListener('mouseup', (e) => {
-  if (!dragging) return;
-  const dx = Math.abs(e.clientX - dragStartX);
-  const dy = Math.abs(e.clientY - dragStartY);
-  if (dx < 4 && dy < 4) {
-    // Click — jump to clicked location
-    const rect = cv.getBoundingClientRect();
-    const sx = CW / rect.width, sy = CH / rect.height;
-    const wx = (e.clientX - rect.left) * sx / zoom + cameraX;
-    const wy = (e.clientY - rect.top) * sy / zoom + cameraY;
-    for (const L of Object.values(LOCS)) {
-      if (wx >= L.x && wx <= L.x + L.w && wy >= L.y && wy <= L.y + L.h) {
-        cameraTargetX = L.x + L.w / 2 - CW / (2 * zoom);
-        cameraTargetY = L.y + L.h / 2 - CH / (2 * zoom);
-        break;
-      }
-    }
-  }
-  dragging = false;
-});
-
-cv.addEventListener('mouseleave', () => { dragging = false; });
-
-cv.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  const delta = -Math.sign(e.deltaY) * 0.15;
-  targetZoom = Math.max(0.4, Math.min(3.0, targetZoom + delta));
-}, { passive: false });
-
-// Touch: single-finger pan, two-finger pinch-to-zoom
-let touchDragging = false, touchStartX = 0, touchStartY = 0, touchCamStartX = 0, touchCamStartY = 0;
-let pinching = false, pinchStartDist = 0, pinchStartZoom = 1;
-
-function touchDist(t) {
-  const dx = t[0].clientX - t[1].clientX;
-  const dy = t[0].clientY - t[1].clientY;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-cv.addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  if (e.touches.length === 2) {
-    pinching = true;
-    touchDragging = false;
-    pinchStartDist = touchDist(e.touches);
-    pinchStartZoom = targetZoom;
-  } else if (e.touches.length === 1) {
-    touchDragging = true;
-    pinching = false;
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-    touchCamStartX = cameraX;
-    touchCamStartY = cameraY;
-  }
-}, { passive: false });
-
-cv.addEventListener('touchmove', (e) => {
-  e.preventDefault();
-  if (pinching && e.touches.length >= 2) {
-    const dist = touchDist(e.touches);
-    const scale = dist / pinchStartDist;
-    targetZoom = Math.max(0.4, Math.min(3.0, pinchStartZoom * scale));
-  } else if (touchDragging && e.touches.length === 1) {
-    const rect = cv.getBoundingClientRect();
-    const scaleX = CW / rect.width / zoom;
-    const scaleY = CH / rect.height / zoom;
-    const dx = (e.touches[0].clientX - touchStartX) * scaleX;
-    const dy = (e.touches[0].clientY - touchStartY) * scaleY;
-    cameraX = touchCamStartX - dx;
-    cameraY = touchCamStartY - dy;
-    cameraTargetX = cameraX;
-    cameraTargetY = cameraY;
-    clampCamera();
-    autoFollow = false;
-    setFollowTarget('');
-  }
-}, { passive: false });
-
-cv.addEventListener('touchend', (e) => {
-  if (e.touches.length < 2) pinching = false;
-  if (e.touches.length === 0) touchDragging = false;
-});
-
-// Keyboard shortcuts
-addEventListener('keydown', (e) => {
-  const speed = 40 / zoom;
-  switch (e.key) {
-    case 'ArrowLeft': cameraTargetX -= speed; break;
-    case 'ArrowRight': cameraTargetX += speed; break;
-    case 'ArrowUp': cameraTargetY -= speed; break;
-    case 'ArrowDown': cameraTargetY += speed; break;
-    case '+': case '=': targetZoom = Math.min(3.0, targetZoom + 0.15); break;
-    case '-': case '_': targetZoom = Math.max(0.4, targetZoom - 0.15); break;
-    default: return;
-  }
-  e.preventDefault();
-  autoFollow = false;
-  setFollowTarget('');
-});
-
-function updateCamera() {
-  zoom += (targetZoom - zoom) * 0.12;
-  const ft = followTarget || (autoFollow ? lastSpeaker : null);
-  if (ft && sprites[ft]) {
-    const s = sprites[ft];
-    cameraTargetX = s.x - CW / (2 * zoom);
-    cameraTargetY = s.y - CH / (2 * zoom);
-  }
-  cameraX += (cameraTargetX - cameraX) * 0.08;
-  cameraY += (cameraTargetY - cameraY) * 0.08;
-  clampCamera();
-  worldContainer.scale.set(zoom);
-  worldContainer.position.set(-cameraX * zoom, -cameraY * zoom);
-}
-
-// ========== FOLLOW BOT ==========
-function setFollowTarget(name) {
-  followTarget = name;
-  const sel = document.getElementById('follow-sel');
-  sel.value = name;
-  sel.className = name ? 'active' : '';
-}
-
-function updateFollowSelect() {
-  const sel = document.getElementById('follow-sel');
-  const prev = sel.value;
-  const names = Object.keys(sprites).sort();
-  sel.innerHTML = '<option value="">Follow...</option>' +
-    names.map(n => `<option value="${n}">${sprites[n].dn}</option>`).join('');
-  if (prev && sprites[prev]) sel.value = prev;
-  else if (followTarget && !sprites[followTarget]) setFollowTarget('');
-}
-
-document.getElementById('follow-sel').addEventListener('change', (e) => {
-  const v = e.target.value;
-  followTarget = v;
-  e.target.className = v ? 'active' : '';
-  if (v && sprites[v]) {
-    autoFollow = false;
-    cameraTargetX = sprites[v].x - CW / (2 * zoom);
-    cameraTargetY = sprites[v].y - CH / (2 * zoom);
-  }
-});
-
-// ========== SEEDED PRNG ==========
-function mulberry32(seed) {
-  return function() {
-    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
-    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-
-// ========== TERRAIN RENDERING ==========
-let terrainSprite = null;
-
-function prerenderTerrain() {
-  const tc = document.createElement('canvas');
-  tc.width = worldW; tc.height = worldH;
-  const c = tc.getContext('2d');
-  const rng = mulberry32(42);
-
-  // Grass base
-  c.fillStyle = '#3b7d34';
-  c.fillRect(0, 0, worldW, worldH);
-
-  // Grass variation
-  for (let x = 0; x < worldW; x += 6) {
-    for (let y = 0; y < worldH; y += 6) {
-      const v = rng();
-      if (v < 0.3) { c.fillStyle = '#4a8b3f'; c.fillRect(x, y, 4, 4); }
-      else if (v < 0.4) { c.fillStyle = '#55a048'; c.fillRect(x, y, 2, 4); }
-      if (rng() < 0.005) {
-        c.fillStyle = ['#ff6','#f8f','#6ef','#fa5'][Math.floor(rng() * 4)];
-        c.fillRect(x, y, 2, 2);
-      }
-    }
-  }
-
-  // Check if near any location
-  function isNearLoc(px, py, margin) {
-    for (const L of Object.values(LOCS)) {
-      if (px > L.x - margin && px < L.x + L.w + margin &&
-          py > L.y - margin && py < L.y + L.h + margin) return true;
-    }
-    return false;
-  }
-
-  // Trees (¾ view with side shadow)
-  function drawTreeAt(x, y) {
-    const TD = 6;
-    // Trunk (front face)
-    c.fillStyle = '#5a3a1a'; c.fillRect(x + 6, y + 16, 6, 12);
-    // Trunk (side face, darker)
-    c.fillStyle = '#4a2a10';
-    c.beginPath();
-    c.moveTo(x + 12, y + 16); c.lineTo(x + 12 + TD, y + 16 - TD * 0.6);
-    c.lineTo(x + 12 + TD, y + 28 - TD * 0.6); c.lineTo(x + 12, y + 28);
-    c.fill();
-    // Foliage (front, layered)
-    c.fillStyle = '#2a7a2a'; c.fillRect(x, y + 6, 18, 14);
-    c.fillStyle = '#3a9a3a'; c.fillRect(x + 2, y, 14, 12);
-    // Foliage (side shadow)
-    c.fillStyle = '#1a6a1a';
-    c.beginPath();
-    c.moveTo(x + 18, y + 6); c.lineTo(x + 18 + TD, y + 6 - TD * 0.6);
-    c.lineTo(x + 18 + TD, y + 20 - TD * 0.6); c.lineTo(x + 18, y + 20);
-    c.fill();
-    // Highlight
-    c.fillStyle = '#4aaa4a'; c.fillRect(x + 5, y + 3, 4, 4);
-  }
-
-  for (let i = 0; i < 60; i++) {
-    const tx = rng() * (worldW - 40);
-    const ty = rng() * (worldH - 40);
-    if (!isNearLoc(tx, ty, 80)) drawTreeAt(tx, ty);
-  }
-
-  // Rocks
-  for (let i = 0; i < 30; i++) {
-    const rx = rng() * (worldW - 20);
-    const ry = rng() * (worldH - 20);
-    if (!isNearLoc(rx, ry, 60)) {
-      c.fillStyle = '#7a7a6a'; c.fillRect(rx, ry, 10, 6);
-      c.fillStyle = '#8a8a7a'; c.fillRect(rx + 1, ry, 8, 4);
-      c.fillStyle = '#9a9a8a'; c.fillRect(rx + 2, ry + 1, 4, 2);
-    }
-  }
-
-  const tex = PIXI.Texture.from(tc);
-  if (terrainSprite) { terrainLayer.removeChild(terrainSprite); terrainSprite.destroy(); }
-  terrainSprite = new PIXI.Sprite(tex);
-  terrainLayer.addChild(terrainSprite);
-}
+// Initialize extracted modules
+initTerrain(terrainLayer, LOCS);
+initParticles(effectsLayer, LOCS);
 
 // ========== PATH RENDERING ==========
 function computeBezier(ax, ay, bx, by) {
@@ -571,67 +326,75 @@ function computeBezier(ax, ay, bx, by) {
   return { cx, cy };
 }
 
-function drawPaths() {
-  pathGraphics.clear();
-  for (const [idA, idB] of edges) {
-    const A = LOCS[idA], B = LOCS[idB];
-    if (!A || !B) continue;
-    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
-    const bx = B.x + B.w / 2, by = B.y + B.h / 2;
-    const { cx, cy } = computeBezier(ax, ay, bx, by);
+function pathKey(idA, idB) {
+  return idA < idB ? idA + '::' + idB : idB + '::' + idA;
+}
 
-    // Outer stone border
-    pathGraphics.moveTo(ax, ay);
-    pathGraphics.quadraticCurveTo(cx, cy, bx, by);
-    pathGraphics.stroke({ color: 0x6b5a40, width: 16, alpha: 0.7, cap: 'round', join: 'round' });
+function drawSinglePath(idA, idB) {
+  const A = LOCS[idA], B = LOCS[idB];
+  if (!A || !B) return null;
+  const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+  const bx = B.x + B.w / 2, by = B.y + B.h / 2;
+  const { cx, cy } = computeBezier(ax, ay, bx, by);
+  const g = new PIXI.Graphics();
 
-    // Main stone path
-    pathGraphics.moveTo(ax, ay);
-    pathGraphics.quadraticCurveTo(cx, cy, bx, by);
-    pathGraphics.stroke({ color: 0x9a8468, width: 12, alpha: 0.9, cap: 'round', join: 'round' });
-
-    // Inner highlight
-    pathGraphics.moveTo(ax, ay);
-    pathGraphics.quadraticCurveTo(cx, cy, bx, by);
-    pathGraphics.stroke({ color: 0xb0a080, width: 4, alpha: 0.3, cap: 'round', join: 'round' });
-
-    // Dashed stone pattern along the curve
-    const steps = Math.max(8, Math.floor(Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2) / 28));
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps;
-      // Quadratic bezier point: (1-t)^2*P0 + 2(1-t)t*C + t^2*P1
-      const u = 1 - t;
-      const px = u * u * ax + 2 * u * t * cx + t * t * bx;
-      const py = u * u * ay + 2 * u * t * cy + t * t * by;
-      // Tangent for perpendicular stone lines
-      const tx = 2 * u * (cx - ax) + 2 * t * (bx - cx);
-      const ty = 2 * u * (cy - ay) + 2 * t * (by - cy);
-      const tlen = Math.sqrt(tx * tx + ty * ty) || 1;
-      const pnx = -ty / tlen, pny = tx / tlen;
-      // Short perpendicular dash
-      pathGraphics.moveTo(px + pnx * 4, py + pny * 4);
-      pathGraphics.lineTo(px - pnx * 4, py - pny * 4);
-      pathGraphics.stroke({ color: 0x7d6b50, width: 1.5, alpha: 0.4 });
-    }
+  // Outer stone border
+  g.moveTo(ax, ay); g.quadraticCurveTo(cx, cy, bx, by);
+  g.stroke({ color: 0x6b5a40, width: 16, alpha: 0.7, cap: 'round', join: 'round' });
+  // Main stone path
+  g.moveTo(ax, ay); g.quadraticCurveTo(cx, cy, bx, by);
+  g.stroke({ color: 0x9a8468, width: 12, alpha: 0.9, cap: 'round', join: 'round' });
+  // Inner highlight
+  g.moveTo(ax, ay); g.quadraticCurveTo(cx, cy, bx, by);
+  g.stroke({ color: 0xb0a080, width: 4, alpha: 0.3, cap: 'round', join: 'round' });
+  // Dashed stone pattern
+  const steps = Math.max(8, Math.floor(Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2) / 28));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const px = u * u * ax + 2 * u * t * cx + t * t * bx;
+    const py = u * u * ay + 2 * u * t * cy + t * t * by;
+    const tx = 2 * u * (cx - ax) + 2 * t * (bx - cx);
+    const ty = 2 * u * (cy - ay) + 2 * t * (by - cy);
+    const tlen = Math.sqrt(tx * tx + ty * ty) || 1;
+    const pnx = -ty / tlen, pny = tx / tlen;
+    g.moveTo(px + pnx * 4, py + pny * 4);
+    g.lineTo(px - pnx * 4, py - pny * 4);
+    g.stroke({ color: 0x7d6b50, width: 1.5, alpha: 0.4 });
   }
+
+  // Store bounding box for culling (endpoints + control point)
+  g._bounds = {
+    minX: Math.min(ax, bx, cx) - 10,
+    minY: Math.min(ay, by, cy) - 10,
+    maxX: Math.max(ax, bx, cx) + 10,
+    maxY: Math.max(ay, by, cy) + 10,
+  };
+
+  return g;
+}
+
+function drawAllPaths() {
+  // Clear existing
+  for (const [, g] of pathObjects) { pathLayer.removeChild(g); g.destroy(); }
+  pathObjects.clear();
+  for (const [idA, idB] of edges) {
+    const key = pathKey(idA, idB);
+    if (pathObjects.has(key)) continue;
+    const g = drawSinglePath(idA, idB);
+    if (g) { pathLayer.addChild(g); pathObjects.set(key, g); }
+  }
+}
+
+function addSinglePath(idA, idB) {
+  const key = pathKey(idA, idB);
+  if (pathObjects.has(key)) return;
+  const g = drawSinglePath(idA, idB);
+  if (g) { pathLayer.addChild(g); pathObjects.set(key, g); }
 }
 
 // ========== LOCATION RENDERING ==========
 let locationContainers = {};
-
-function hexToInt(hex) { return parseInt(hex.replace('#', ''), 16); }
-
-function hexToRgb(hex) {
-  const n = parseInt(hex.replace('#', ''), 16);
-  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
-}
-
-function darken(hex, factor) {
-  const r = (hex >> 16) & 0xff;
-  const g = (hex >> 8) & 0xff;
-  const b = hex & 0xff;
-  return ((r * factor | 0) << 16) | ((g * factor | 0) << 8) | (b * factor | 0);
-}
 
 function drawLocationGraphics(id, L) {
   const container = new PIXI.Container();
@@ -919,20 +682,8 @@ function renderAllLocations() {
   }
 }
 
-// ========== 32x32 CHARACTER SPRITES ==========
-const ANIM_POSES = ['idle', 'walk', 'talk', 'think', 'sit', 'wave'];
-const charTextureCache = {};
-let charSheet = null; // loaded from characters.png if available
-
-(async () => {
-  try {
-    const tex = await PIXI.Assets.load('./assets/characters.png');
-    charSheet = tex;
-    console.log('[observer] Character sprite sheet loaded');
-  } catch {
-    console.log('[observer] No characters.png found — using fallback drawing');
-  }
-})();
+// Character sprites — extracted to observer-characters.js
+loadCharacterSheet();
 
 // ========== BUILDING SPRITE SHEET ==========
 let buildingSheet = null;
@@ -980,342 +731,9 @@ function getBuildingTexture(id) {
   return buildingTextureCache[id];
 }
 
-/**
- * Extract animation textures for a variant row from the sprite sheet.
- * Variant = row index (0–11), columns = 6 poses × 2 frames.
- */
-function getVariantAnims(variant) {
-  const key = `__variant_${variant}`;
-  if (charTextureCache[key]) return charTextureCache[key];
-  const anims = {};
-  for (let p = 0; p < ANIM_POSES.length; p++) {
-    const pose = ANIM_POSES[p];
-    anims[pose] = [];
-    for (let f = 0; f < 2; f++) {
-      const col = p * 2 + f;
-      const c = document.createElement('canvas');
-      c.width = SPRITE_SIZE; c.height = SPRITE_SIZE;
-      c.getContext('2d').drawImage(
-        charSheet.source.resource,
-        col * 32, variant * 32, 32, 32, 0, 0, 32, 32
-      );
-      anims[pose].push(PIXI.Texture.from(c));
-    }
-  }
-  charTextureCache[key] = anims;
-  return anims;
-}
+// Character animation drawing — extracted to observer-characters.js
 
-/**
- * Get or create cached animation textures for an appearance.
- * Uses sprite sheet variants when available, falls back to procedural drawing.
- */
-function getCharAnims(appearance) {
-  // Sprite sheet path: variant-based indexing
-  if (charSheet && appearance && appearance.variant !== undefined) {
-    return getVariantAnims(appearance.variant);
-  }
-
-  // Fallback: procedural drawing
-  const color = (appearance && BCOLORS[appearance.variant % BCOLORS.length]) || BCOLORS[0];
-  if (charTextureCache[color]) return charTextureCache[color];
-  const anims = {};
-  for (const pose of ANIM_POSES) {
-    anims[pose] = [];
-    for (let f = 0; f < 2; f++) {
-      const c = document.createElement('canvas');
-      c.width = SPRITE_SIZE; c.height = SPRITE_SIZE;
-      const ctx = c.getContext('2d');
-      drawSocialChar(ctx, color, f, pose);
-      anims[pose].push(PIXI.Texture.from(c));
-    }
-  }
-  charTextureCache[color] = anims;
-  return anims;
-}
-
-function drawSocialChar(ctx, hexColor, frame, pose) {
-  const { r, g, b } = hexToRgb(hexColor);
-  const hair = `rgb(${Math.max(0, r - 80)},${Math.max(0, g - 80)},${Math.max(0, b - 80)})`;
-  const bodyLight = `rgb(${Math.min(255, r + 40)},${Math.min(255, g + 40)},${Math.min(255, b + 40)})`;
-  const armShade = `rgb(${Math.max(0, r - 25)},${Math.max(0, g - 25)},${Math.max(0, b - 25)})`;
-  const skin = '#f0c8a0';
-  const skinShade = '#d8b090';
-  const eye = '#1a1a2e';
-  const pants = '#3a3a5c';
-  const boot = '#4a3728';
-  const mouth = '#c06060';
-
-  ctx.clearRect(0, 0, 32, 32);
-
-  // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.2)';
-  ctx.beginPath();
-  ctx.ellipse(16, 30, 7, 2.5, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  switch (pose) {
-    case 'idle': default: {
-      const y = frame === 1 ? -1 : 0;
-      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, false);
-      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
-      drawArm32(ctx, 6, 15 + y, armShade, skin);
-      drawArm32(ctx, 22, 15 + y, armShade, skin);
-      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
-      break;
-    }
-    case 'walk': {
-      const y = frame === 1 ? -1 : 0;
-      const f = frame === 0 ? 2 : -2;
-      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, false);
-      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
-      drawArm32(ctx, 6, 15 + y - f, armShade, skin);
-      drawArm32(ctx, 22, 15 + y + f, armShade, skin);
-      drawLegs32(ctx, 10 - f, 22 + y, 17 + f, 22 + y, pants, boot);
-      break;
-    }
-    case 'talk': {
-      const y = frame === 1 ? -1 : 0;
-      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, true);
-      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
-      drawArm32(ctx, 6, 15 + y, armShade, skin);
-      // Right arm gesture (raised)
-      ctx.fillStyle = armShade;
-      ctx.fillRect(22, 12 + y, 3, 4);
-      ctx.fillRect(24, 9 + y + (frame === 1 ? -1 : 0), 3, 4);
-      ctx.fillStyle = skin;
-      ctx.fillRect(25, 8 + y + (frame === 1 ? -1 : 0), 2, 2);
-      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
-      break;
-    }
-    case 'think': {
-      const y = frame === 1 ? -1 : 0;
-      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, false);
-      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
-      drawArm32(ctx, 6, 15 + y, armShade, skin);
-      // Right arm on chin
-      ctx.fillStyle = armShade;
-      ctx.fillRect(22, 14 + y, 3, 3);
-      ctx.fillRect(21, 11 + y, 3, 4);
-      ctx.fillStyle = skin;
-      ctx.fillRect(20, 9 + y, 2, 3);
-      // Thought dots
-      if (frame === 1) {
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
-        ctx.fillRect(26, 4, 2, 2);
-        ctx.fillRect(28, 1, 3, 3);
-      }
-      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
-      break;
-    }
-    case 'sit': {
-      drawHead32(ctx, 10, 6, hair, skin, skinShade, eye, false);
-      drawBody32(ctx, 9, 18, hexColor, bodyLight);
-      drawArm32(ctx, 6, 19, armShade, skin);
-      drawArm32(ctx, 22, 19, armShade, skin);
-      // Seated legs
-      ctx.fillStyle = pants;
-      ctx.fillRect(8, 26, 5, 3);
-      ctx.fillRect(16, 26, 5, 3);
-      ctx.fillRect(6, 27, 3, 3);
-      ctx.fillRect(20, 27, 3, 3);
-      ctx.fillStyle = boot;
-      ctx.fillRect(4, 28, 3, 2);
-      ctx.fillRect(22, 28, 3, 2);
-      break;
-    }
-    case 'wave': {
-      const y = frame === 1 ? -1 : 0;
-      drawHead32(ctx, 10, 2 + y, hair, skin, skinShade, eye, true);
-      drawBody32(ctx, 9, 14 + y, hexColor, bodyLight);
-      drawArm32(ctx, 6, 15 + y, armShade, skin);
-      // Right arm raised high
-      ctx.fillStyle = armShade;
-      ctx.fillRect(22, 12 + y, 3, 3);
-      ctx.fillRect(24, 7 + y, 3, 6);
-      ctx.fillStyle = skin;
-      ctx.fillRect(25, 4 + y + (frame === 1 ? -2 : 0), 3, 3);
-      drawLegs32(ctx, 10, 22 + y, 17, 22 + y, pants, boot);
-      break;
-    }
-  }
-}
-
-function drawHead32(ctx, x, y, hair, skin, skinShade, eye, mouthOpen) {
-  ctx.fillStyle = hair;
-  ctx.fillRect(x - 1, y, 14, 4);
-  ctx.fillRect(x - 2, y + 2, 2, 6);
-  ctx.fillStyle = skin;
-  ctx.fillRect(x, y + 3, 12, 9);
-  ctx.fillStyle = skinShade;
-  ctx.fillRect(x, y + 10, 12, 2);
-  ctx.fillStyle = eye;
-  ctx.fillRect(x + 2, y + 5, 2, 2);
-  ctx.fillRect(x + 8, y + 5, 2, 2);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(x + 2, y + 5, 1, 1);
-  ctx.fillRect(x + 8, y + 5, 1, 1);
-  if (mouthOpen) {
-    ctx.fillStyle = '#c06060';
-    ctx.fillRect(x + 4, y + 8, 4, 2);
-  } else {
-    ctx.fillStyle = '#c08080';
-    ctx.fillRect(x + 5, y + 9, 2, 1);
-  }
-  ctx.fillStyle = skin;
-  ctx.fillRect(x + 4, y + 12, 4, 2);
-}
-
-function drawBody32(ctx, x, y, color, bodyLight) {
-  ctx.fillStyle = color;
-  ctx.fillRect(x, y, 14, 8);
-  ctx.fillStyle = bodyLight;
-  ctx.fillRect(x + 1, y, 6, 4);
-}
-
-function drawArm32(ctx, x, y, armShade, skin) {
-  ctx.fillStyle = armShade;
-  ctx.fillRect(x, y, 3, 7);
-  ctx.fillStyle = skin;
-  ctx.fillRect(x, y + 7, 3, 2);
-}
-
-function drawLegs32(ctx, lx, ly, rx, ry, pants, boot) {
-  ctx.fillStyle = pants;
-  ctx.fillRect(lx, ly, 4, 5);
-  ctx.fillRect(rx, ry, 4, 5);
-  ctx.fillStyle = boot;
-  ctx.fillRect(lx - 1, ly + 5, 5, 3);
-  ctx.fillRect(rx - 1, ry + 5, 5, 3);
-}
-
-// ========== PARTICLE SYSTEM ==========
-const particles = [];
-const PARTICLE_POOL_SIZE = 200;
-for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
-  particles.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0, color: 0xffffff, size: 2, gravity: 0 });
-}
-const particleGfx = new PIXI.Graphics();
-effectsLayer.addChild(particleGfx);
-
-function emitParticles(worldX, worldY, count, config) {
-  const { colors, speedMin = 0.3, speedMax = 1.5, sizeMin = 1, sizeMax = 3,
-    lifeMin = 20, lifeMax = 40, gravity = 0.03, spread = Math.PI * 2,
-    baseAngle = -Math.PI / 2 } = config;
-  let spawned = 0;
-  for (const p of particles) {
-    if (spawned >= count) break;
-    if (p.active) continue;
-    const angle = Math.random() * spread - spread / 2 + baseAngle;
-    const speed = speedMin + Math.random() * (speedMax - speedMin);
-    p.x = worldX + (Math.random() - 0.5) * 8;
-    p.y = worldY + (Math.random() - 0.5) * 8;
-    p.vx = Math.cos(angle) * speed;
-    p.vy = Math.sin(angle) * speed;
-    p.gravity = gravity;
-    p.life = lifeMin + Math.random() * (lifeMax - lifeMin);
-    p.maxLife = p.life;
-    p.color = colors[Math.floor(Math.random() * colors.length)];
-    p.size = sizeMin + Math.random() * (sizeMax - sizeMin);
-    p.active = true;
-    spawned++;
-  }
-}
-
-function updateParticles() {
-  particleGfx.clear();
-  for (const p of particles) {
-    if (!p.active) continue;
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += p.gravity;
-    p.life--;
-    if (p.life <= 0) { p.active = false; continue; }
-    const alpha = Math.min(1, p.life / p.maxLife * 2);
-    const s = p.size * (0.5 + 0.5 * p.life / p.maxLife);
-    particleGfx.rect(p.x - s / 2, p.y - s / 2, s, s);
-    particleGfx.fill({ color: p.color, alpha });
-  }
-}
-
-function emitAmbientParticles() {
-  // Coffee hub smoke (from chimney on side wall)
-  const ch = LOCS['coffee-hub'];
-  if (ch && frame % 15 === 0) {
-    emitParticles(ch.x + ch.w + 10, ch.y - 10, 1, {
-      colors: [0xcccccc, 0xaaaaaa, 0x999999],
-      speedMin: 0.1, speedMax: 0.4, sizeMin: 2, sizeMax: 4,
-      lifeMin: 30, lifeMax: 60, gravity: -0.02,
-      spread: 0.5, baseAngle: -Math.PI / 2,
-    });
-  }
-
-  // Central square fountain
-  const cs = LOCS['central-square'];
-  if (cs && frame % 8 === 0) {
-    emitParticles(cs.x + cs.w / 2, cs.y + cs.h / 2 - 10, 1, {
-      colors: [0x88ccff, 0xaaddff, 0x66bbee],
-      speedMin: 0.2, speedMax: 0.8, sizeMin: 1, sizeMax: 3,
-      lifeMin: 15, lifeMax: 30, gravity: 0.05,
-      spread: Math.PI, baseAngle: -Math.PI / 2,
-    });
-  }
-
-  // Workshop sawdust (beside building)
-  const ws = LOCS['workshop'];
-  if (ws && frame % 20 === 0) {
-    emitParticles(ws.x + ws.w + 30, ws.y + ws.h, 1, {
-      colors: [0xddcc88, 0xccbb77, 0xbbaa66],
-      speedMin: 0.1, speedMax: 0.3, sizeMin: 1, sizeMax: 2,
-      lifeMin: 20, lifeMax: 40, gravity: 0.01,
-      spread: Math.PI, baseAngle: -Math.PI / 4,
-    });
-  }
-
-  const p = (phase || '').toLowerCase();
-  if (p.includes('night')) {
-    // Fireflies at chill-zone
-    const cz = LOCS['chill-zone'];
-    if (cz && frame % 25 === 0) {
-      emitParticles(
-        cz.x + cz.w / 2 + (Math.random() - 0.5) * cz.w,
-        cz.y + cz.h / 2 + (Math.random() - 0.5) * cz.h,
-        1, {
-          colors: [0xffff44, 0xeeff44, 0xddff22],
-          speedMin: 0.05, speedMax: 0.2, sizeMin: 1, sizeMax: 2,
-          lifeMin: 40, lifeMax: 80, gravity: -0.005,
-          spread: Math.PI * 2, baseAngle: 0,
-        }
-      );
-    }
-    // Candle flicker at sunset-lounge (flanking door at bottom)
-    const sl = LOCS['sunset-lounge'];
-    if (sl && frame % 12 === 0) {
-      emitParticles(sl.x + 6, sl.y + sl.h - 4, 1, {
-        colors: [0xff8844, 0xffaa66, 0xffcc88],
-        speedMin: 0.05, speedMax: 0.15, sizeMin: 1, sizeMax: 2,
-        lifeMin: 10, lifeMax: 20, gravity: -0.02,
-        spread: 0.3, baseAngle: -Math.PI / 2,
-      });
-      emitParticles(sl.x + sl.w - 6, sl.y + sl.h - 4, 1, {
-        colors: [0xff8844, 0xffaa66, 0xffcc88],
-        speedMin: 0.05, speedMax: 0.15, sizeMin: 1, sizeMax: 2,
-        lifeMin: 10, lifeMax: 20, gravity: -0.02,
-        spread: 0.3, baseAngle: -Math.PI / 2,
-      });
-    }
-  } else if (p.includes('evening') || p.includes('sunset')) {
-    const sl = LOCS['sunset-lounge'];
-    if (sl && frame % 18 === 0) {
-      emitParticles(sl.x + 6, sl.y + sl.h - 4, 1, {
-        colors: [0xff8844, 0xffaa66],
-        speedMin: 0.05, speedMax: 0.1, sizeMin: 1, sizeMax: 2,
-        lifeMin: 10, lifeMax: 15, gravity: -0.02,
-        spread: 0.3, baseAngle: -Math.PI / 2,
-      });
-    }
-  }
-}
+// Particle system — extracted to observer-particles.js
 
 // ========== STATE ==========
 let locBots = {};
@@ -1326,8 +744,10 @@ let bubbleDom = {};
 let tick = 0, phase = '', paused = false, online = false;
 let nextTickAt = 0, tickIntervalMs = 60000, villageTime = '';
 let relationships = {};
-let emotions = {};
+let governance = {};
 let frame = 0;
+
+initCamera(cv, worldContainer, LOCS, sprites, CW, CH);
 
 // Lazy loading
 let oldestTick = Infinity, loadingMore = false, hasMore = true, basePath = '';
@@ -1407,13 +827,14 @@ function createBotPixi(name, s) {
   body._anims = anims;
   body._pose = 'idle';
 
+  const isNPC = name.startsWith('npc-');
   const textRes = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
   const nameText = new PIXI.Text({
     text: s.dn,
     style: {
       fontFamily: '-apple-system, "Segoe UI", sans-serif',
       fontSize: 10,
-      fill: 0xffffff,
+      fill: isNPC ? 0xffd700 : 0xffffff,
       stroke: { color: 0x000000, width: 3 },
     },
     resolution: textRes,
@@ -1421,25 +842,29 @@ function createBotPixi(name, s) {
   nameText.anchor.set(0.5, 0);
   nameText.position.set(SPRITE_SIZE / 2, SPRITE_SIZE + 2);
 
-  const moodText = new PIXI.Text({
-    text: '',
-    style: {
-      fontFamily: '-apple-system, "Segoe UI", sans-serif',
-      fontSize: 12,
-      fill: 0xffffff,
-    },
-    resolution: textRes,
-  });
-  moodText.anchor.set(0.5, 1);
-  moodText.position.set(SPRITE_SIZE / 2, -4);
-  moodText.visible = false;
+  let npcBadge = null;
+  if (isNPC) {
+    npcBadge = new PIXI.Text({
+      text: '✦ NPC',
+      style: {
+        fontFamily: '-apple-system, "Segoe UI", sans-serif',
+        fontSize: 8,
+        fill: 0xffd700,
+        stroke: { color: 0x000000, width: 2 },
+      },
+      resolution: textRes,
+    });
+    npcBadge.anchor.set(0.5, 0);
+    npcBadge.position.set(SPRITE_SIZE / 2, SPRITE_SIZE + 14);
+  }
 
-  container.addChild(body, nameText, moodText);
+  container.addChild(body, nameText);
+  if (npcBadge) container.addChild(npcBadge);
   container.position.set(s.x - SPRITE_SIZE / 2, s.y - SPRITE_SIZE / 2);
   container.zIndex = Math.floor(s.y);
   botLayer.addChild(container);
 
-  const obj = { container, body, nameText, moodText };
+  const obj = { container, body, nameText };
   botPixi[name] = obj;
   return obj;
 }
@@ -1461,18 +886,6 @@ function setBotPose(name, pose, duration) {
     bp.body.textures = bp.body._anims[pose];
     bp.body._pose = pose;
     bp.body.play();
-  }
-}
-
-function updateBotMood(name) {
-  const bp = botPixi[name]; if (!bp) return;
-  const e = emotions[name];
-  if (e && e.emotion && e.emotion !== 'neutral') {
-    const ME = { happy: '\u{1F60A}', content: '\u{1F60C}', excited: '\u{1F929}', lonely: '\u{1F614}', bored: '\u{1F610}' };
-    bp.moodText.text = ME[e.emotion] || '';
-    bp.moodText.visible = !!bp.moodText.text;
-  } else {
-    bp.moodText.visible = false;
   }
 }
 
@@ -1600,10 +1013,11 @@ function positionBubbles() {
   const wr = document.getElementById('map-wrap').getBoundingClientRect();
   const sx = cr.width / CW, sy = cr.height / CH;
   const ox = cr.left - wr.left, oy = cr.top - wr.top;
+  const cam = getCameraState();
   for (const [name, b] of Object.entries(bubbleDom)) {
     const s = sprites[name]; if (!s) continue;
-    const screenX = (s.x - cameraX) * zoom * sx + ox;
-    const screenY = ((s.y - SPRITE_SIZE) - cameraY) * zoom * sy + oy;
+    const screenX = (s.x - cam.cameraX) * cam.zoom * sx + ox;
+    const screenY = ((s.y - SPRITE_SIZE) - cam.cameraY) * cam.zoom * sy + oy;
     if (screenX < -100 || screenX > cr.width + 100 || screenY < -100 || screenY > cr.height + 100) {
       b.el.style.display = 'none';
     } else {
@@ -1642,19 +1056,51 @@ function showFloatingText(location, text) {
   const wr = wrap.getBoundingClientRect();
   const sx = cr.width / CW, sy = cr.height / CH;
   const ox = cr.left - wr.left, oy = cr.top - wr.top;
-  const screenX = (L.x + L.w / 2 - cameraX) * zoom * sx + ox - 60;
-  const screenY = (L.y - 20 - cameraY) * zoom * sy + oy;
+  const cam = getCameraState();
+  const screenX = (L.x + L.w / 2 - cam.cameraX) * cam.zoom * sx + ox - 60;
+  const screenY = (L.y - 20 - cam.cameraY) * cam.zoom * sy + oy;
   el.style.left = screenX + 'px';
   el.style.top = screenY + 'px';
   setTimeout(() => el.classList.add('fade'), 4000);
   setTimeout(() => el.remove(), 5000);
 }
 
+// ========== VIEWPORT CULLING ==========
+function cullLocations() {
+  const r = getCameraRect();
+  const pad = 100;
+  for (const [id, container] of Object.entries(locationContainers)) {
+    const L = LOCS[id];
+    if (!L) continue;
+    container.visible = L.x + L.w + pad > r.minX && L.x - pad < r.maxX &&
+                        L.y + L.h + pad > r.minY && L.y - pad < r.maxY;
+  }
+}
+
+function cullBots() {
+  const r = getCameraRect();
+  const pad = 60;
+  for (const [, bp] of Object.entries(botPixi)) {
+    const p = bp.container.position;
+    bp.container.visible = p.x + SPRITE_SIZE + pad > r.minX && p.x - pad < r.maxX &&
+                           p.y + SPRITE_SIZE + pad > r.minY && p.y - pad < r.maxY;
+  }
+}
+
+function cullPaths() {
+  const r = getCameraRect();
+  for (const [, g] of pathObjects) {
+    if (!g._bounds) { g.visible = true; continue; }
+    const b = g._bounds;
+    g.visible = b.maxX > r.minX && b.minX < r.maxX &&
+                b.maxY > r.minY && b.minY < r.maxY;
+  }
+}
+
 // ========== WORLD REBUILD ==========
 function rebuildWorld() {
-  updateWorldBounds();
-  prerenderTerrain();
-  drawPaths();
+  clearAllChunks();
+  drawAllPaths();
   renderAllLocations();
 }
 
@@ -1697,7 +1143,6 @@ function actionLogHtml(d) {
   switch (d.action) {
     case 'say':            return `<span class="b">${esc(nm)}</span>: <span class="s">"${esc(d.message)}"</span>`;
     case 'whisper':        return `<span class="b">${esc(nm)}</span> <span class="w">whispered to ${esc(tgt())}</span>`;
-    case 'observe':        return `<span class="o">${esc(nm)} observed silently</span>`;
     case 'move':           return `<span class="b">${esc(nm)}</span> <span class="m">\u2192 ${esc(LNAMES[d.to] || d.to)}</span>`;
     case 'decorate':       return `\uD83C\uDFA8 <span class="b">${esc(nm)}</span> <span class="k">decorated ${esc(ln())}: ${esc(d.decoration)}</span>`;
     case 'leave_message':  return `\uD83D\uDCDD <span class="b">${esc(nm)}</span> <span class="k">left a message at ${esc(ln())}: "${esc(d.message)}"</span>`;
@@ -1706,6 +1151,9 @@ function actionLogHtml(d) {
     case 'build':          return `\uD83C\uDFD7 <span class="b">${esc(nm)}</span> <span class="j">built <b>${esc(d.locationName)}</b>: ${esc(d.locationDesc)}</span>`;
     case 'set_occupation': return `\uD83D\uDCBC <span class="b">${esc(nm)}</span> <span class="j">is now a <b>${esc(d.title)}</b></span>`;
     case 'propose_bond':   return `\uD83E\uDD1D <span class="b">${esc(nm)}</span> <span class="j">formed a bond with <b>${esc(tgt())}</b>: ${esc(d.bondType)}</span>`;
+    case 'propose':        return `\uD83D\uDCCB <span class="b">${esc(nm)}</span> <span class="j">proposed: <b>${esc(d.description)}</b></span>`;
+    case 'vote':           return `\uD83D\uDDF3 <span class="b">${esc(nm)}</span> <span class="j">voted <b>${d.vote === 'yes' ? 'YES' : 'NO'}</b>${d.reason ? ': ' + esc(d.reason) : ''}</span>`;
+    case 'amend':          return `\uD83D\uDCDC <span class="b">${esc(nm)}</span> <span class="j">amended the constitution!</span>`;
     default: return null;
   }
 }
@@ -1732,17 +1180,6 @@ function eventToHtml(d) {
       const verb = d.label ? `became ${d.label}s` : 'are no longer close';
       return `${t} <span class="b">${esc(d.fromDisplay)}</span> \u2665 <span class="b">${esc(d.toDisplay)}</span> <span class="j">\u2014 ${esc(verb)}</span>`;
     }
-    case 'emotion': {
-      if (d.emotion === 'neutral') return null;
-      const nm = d.displayName || d.bot;
-      const MOOD_EMOJI = { happy: '\u{1F60A}', content: '\u{1F60C}', excited: '\u{1F929}', lonely: '\u{1F614}', bored: '\u{1F610}' };
-      const emoji = MOOD_EMOJI[d.emotion] || '';
-      return `${t} ${emoji} <span class="b">${esc(nm)}</span> <span class="j">is feeling ${esc(d.emotion)}</span>`;
-    }
-    case 'village_event': {
-      const ln = d.locationName || LNAMES[d.location] || d.location;
-      return `${t} \u26A1 <span class="k">${esc(ln)}: ${esc(d.text)}</span>`;
-    }
     case 'ambient': {
       const ln = d.locationName || LNAMES[d.location] || d.location;
       return `${t} <span class="ambient">\u2615 ${esc(ln)}: ${esc(d.text)}</span>`;
@@ -1753,6 +1190,11 @@ function eventToHtml(d) {
     case 'autopilot_move': {
       const nm = d.displayName || d.bot;
       return `${t} <span class="auto-move">${esc(nm)} \u2192 ${esc(d.toName || LNAMES[d.to] || d.to)}</span>`;
+    }
+    case 'proposal_resolved': {
+      const emoji = d.result === 'passed' ? '\u2705' : '\u274C';
+      const verb = d.result === 'passed' ? 'PASSED' : 'rejected';
+      return `${t} ${emoji} <span class="j">Proposal #${d.proposalId} <b>"${esc(d.description)}"</b> \u2014 ${verb}</span>`;
     }
     default: return null;
   }
@@ -1838,23 +1280,6 @@ function renderRels(highlightKey) {
   }
 }
 
-// ========== MOODS PANEL ==========
-const MOOD_EMOJI = { happy: '\u{1F60A}', content: '\u{1F60C}', excited: '\u{1F929}', lonely: '\u{1F614}', bored: '\u{1F610}' };
-const MOOD_POS = new Set(['happy', 'content', 'excited']);
-
-function renderMoods() {
-  const el = document.getElementById('moods');
-  const entries = Object.entries(emotions).filter(([, e]) => e.emotion && e.emotion !== 'neutral');
-  if (entries.length === 0) { el.classList.remove('show'); return; }
-  el.classList.add('show');
-  el.innerHTML = entries.map(([bot, e]) => {
-    const dn = (sprites[bot] || {}).dn || bot;
-    const emoji = MOOD_EMOJI[e.emotion] || '';
-    const cls = MOOD_POS.has(e.emotion) ? 'mood-pos' : 'mood-neg';
-    return `<span class="${cls}">${emoji} ${esc(dn)}: ${esc(e.emotion)}</span>`;
-  }).join(' \u00b7 ');
-}
-
 // ========== SSE EVENTS ==========
 function onEvent(d) {
   const t = `<span class="t">${hm()}</span>`;
@@ -1866,7 +1291,7 @@ function onEvent(d) {
       if (d.tickIntervalMs) tickIntervalMs = d.tickIntervalMs;
       if (d.villageTime) villageTime = d.villageTime;
       if (d.relationships) relationships = d.relationships;
-      if (d.emotions) emotions = d.emotions;
+      if (d.governance) governance = d.governance;
       if (d.customLocations) {
         for (const [slug, cl] of Object.entries(d.customLocations)) {
           addDynamicLocation(slug, cl.name, cl.connectedTo);
@@ -1881,12 +1306,10 @@ function onEvent(d) {
           const dn = typeof b === 'string' ? b : (b.displayName || b.name || b);
           const app = (typeof b === 'object' && b.appearance) ? b.appearance : null;
           mkSprite(nm, dn, loc, app);
-          updateBotMood(nm);
         });
       }
       updateBar();
       renderRels();
-      renderMoods();
       updateFollowSelect();
       if (!window._initDone) {
         document.getElementById('log').innerHTML = '';
@@ -1901,14 +1324,11 @@ function onEvent(d) {
       if (d.action === 'say') {
         showBubble(d.bot, d.message);
         setBotPose(d.bot, 'talk', 40);
-        lastSpeaker = d.bot;
+        setLastSpeaker(d.bot);
       }
       else if (d.action === 'whisper') {
         showBubble(d.bot, `(whispers to ${d.targetDisplayName || (sprites[d.target] || {}).dn || d.target || '?'})`, true);
         setBotPose(d.bot, 'talk', 30);
-      }
-      else if (d.action === 'observe') {
-        setBotPose(d.bot, 'think', 50);
       }
       else if (d.action === 'move') {
         animateMove(d.bot, d.to);
@@ -1930,6 +1350,18 @@ function onEvent(d) {
           speedMin: 0.5, speedMax: 2.0, sizeMin: 2, sizeMax: 4,
           lifeMin: 20, lifeMax: 50, gravity: 0.02,
         });
+      }
+      else if (d.action === 'propose') {
+        showBubble(d.bot, `\uD83D\uDCCB Proposed: ${d.description}`);
+        setBotPose(d.bot, 'talk', 40);
+      }
+      else if (d.action === 'vote') {
+        showBubble(d.bot, `\uD83D\uDDF3 Voted ${d.vote}`);
+        setBotPose(d.bot, 'think', 30);
+      }
+      else if (d.action === 'amend') {
+        showBubble(d.bot, '\uD83D\uDCDC Constitution amended!');
+        setBotPose(d.bot, 'wave', 40);
       }
       const html = actionLogHtml(d);
       if (html) addLog(`${t} ${html}`);
@@ -1961,10 +1393,7 @@ function onEvent(d) {
       if (d.tickIntervalMs) tickIntervalMs = d.tickIntervalMs;
       if (d.villageTime) villageTime = d.villageTime;
       if (d.relationships) { relationships = d.relationships; renderRels(); }
-      if (d.emotions) {
-        emotions = d.emotions; renderMoods();
-        for (const nm of Object.keys(emotions)) updateBotMood(nm);
-      }
+      if (d.governance) governance = d.governance;
       if (d.customLocations) {
         for (const [slug, cl] of Object.entries(d.customLocations)) {
           addDynamicLocation(slug, cl.name, cl.connectedTo);
@@ -1983,7 +1412,6 @@ function onEvent(d) {
             allBots.add(nm);
             const sp = mkSprite(nm, dn, loc, app);
             if (sp.loc !== loc) animateMove(nm, loc);
-            updateBotMood(nm);
           });
         }
         for (const nm of Object.keys(sprites)) {
@@ -2005,26 +1433,6 @@ function onEvent(d) {
       renderRels(key);
       const verb = d.label ? `became ${d.label}s` : 'are no longer close';
       addLog(`${t} <span class="b">${esc(d.fromDisplay)}</span> \u2665 <span class="b">${esc(d.toDisplay)}</span> <span class="j">\u2014 ${esc(verb)}</span>`);
-      break;
-    }
-
-    case 'emotion': {
-      if (!emotions[d.bot]) emotions[d.bot] = {};
-      emotions[d.bot].emotion = d.emotion;
-      emotions[d.bot].prevEmotion = d.prevEmotion;
-      renderMoods();
-      updateBotMood(d.bot);
-      if (d.emotion !== 'neutral') {
-        const nm = d.displayName || (sprites[d.bot] || {}).dn || d.bot;
-        const emoji = MOOD_EMOJI[d.emotion] || '';
-        addLog(`${t} ${emoji} <span class="b">${esc(nm)}</span> <span class="j">is feeling ${esc(d.emotion)}</span>`);
-      }
-      break;
-    }
-
-    case 'village_event': {
-      const ln = d.locationName || LNAMES[d.location] || d.location;
-      addLog(`${t} \u26A1 <span class="k">${esc(ln)}: ${esc(d.text)}</span>`);
       break;
     }
 
@@ -2068,6 +1476,25 @@ function onEvent(d) {
       break;
     }
 
+    case 'proposal_resolved': {
+      const emoji = d.result === 'passed' ? '\u2705' : '\u274C';
+      const verb = d.result === 'passed' ? 'PASSED' : 'rejected';
+      // Show floating text at central square
+      const cs = LOCS['central-square'];
+      if (cs) {
+        showFloatingText('central-square', `${emoji} Proposal #${d.proposalId} ${verb}!`);
+        if (d.result === 'passed') {
+          emitParticles(cs.x + cs.w / 2, cs.y + cs.h / 2, 25, {
+            colors: [0x44ff44, 0xffdd44, 0xffffff],
+            speedMin: 0.5, speedMax: 2.0, sizeMin: 2, sizeMax: 5,
+            lifeMin: 30, lifeMax: 60, gravity: 0.01,
+          });
+        }
+      }
+      addLog(`${t} ${emoji} <span class="j">Proposal #${d.proposalId} <b>"${esc(d.description)}"</b> \u2014 ${verb}</span>`);
+      break;
+    }
+
     case 'status':
       paused = d.paused; updateBar();
       break;
@@ -2080,19 +1507,33 @@ function connect() {
   const url = basePath ? `${basePath}/events` : '/events';
   const es = new EventSource(url);
   es.onopen = () => { online = true; updateBar(); };
-  es.onmessage = (e) => { try { onEvent(JSON.parse(e.data)); } catch {} };
+  es.onmessage = (e) => {
+    try { onEvent(JSON.parse(e.data)); }
+    catch (err) {
+      console.error('[SSE] onEvent error:', err);
+      document.getElementById('st').textContent = 'SSE Error: ' + err.message;
+    }
+  };
   es.onerror = () => { online = false; updateBar(); };
 }
 
 // ========== GAME LOOP ==========
 app.ticker.add(() => {
   frame++;
+  setTerrainFrame(frame);
+  setParticleState(frame, phase);
+
   updateCamera();
+  const cam = getCameraState();
+  updateVisibleChunks(cam.cameraX, cam.cameraY, cam.zoom, CW, CH);
 
   for (const [name, s] of Object.entries(sprites)) {
     updateSprite(s, name);
   }
 
+  cullLocations();
+  cullBots();
+  cullPaths();
   emitAmbientParticles();
   updateParticles();
   updateDayNight();

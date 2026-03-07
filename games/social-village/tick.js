@@ -13,8 +13,9 @@ import { buildScene, getVillageTime } from './scene.js';
 import {
   processActions,
   computeQualityMetrics,
-  rollVillageEvent,
   rollConversationSpice,
+  resolveExpiredProposal,
+  ensureGovernance,
 } from './logic.js';
 import { updateSocialDynamics } from './relationship-engine.js';
 
@@ -50,6 +51,25 @@ export async function socialTick(ctx) {
   const vt = getVillageTime(gameConfig.timezone);
   const phase = vt.phase;
   state.clock.phase = phase;
+
+  // Initialize governance state if needed
+  ensureGovernance(state);
+
+  // Resolve expired proposals at start of tick
+  const resolvedProposal = resolveExpiredProposal(state, tickNum);
+  if (resolvedProposal) {
+    const resultText = resolvedProposal.result === 'passed' ? '通过' : '未通过';
+    console.log(`[village] proposal #${resolvedProposal.id} resolved: ${resolvedProposal.result}`);
+    broadcastEvent({
+      type: 'proposal_resolved',
+      tick: tickNum,
+      proposalId: resolvedProposal.id,
+      description: resolvedProposal.description,
+      proposalType: resolvedProposal.type,
+      result: resolvedProposal.result,
+      resultText,
+    });
+  }
 
   // Build display name lookup from participants Map
   const displayNames = {};
@@ -91,7 +111,7 @@ export async function socialTick(ctx) {
 
   // Build scenes and collect actions per location
   const allEvents = new Map(); // location → events[]
-  const actionCounts = { say: 0, whisper: 0, observe: 0, move: 0, decorate: 0, leave_message: 0, explore: 0, build: 0, set_occupation: 0, propose_bond: 0 };
+  const actionCounts = { say: 0, whisper: 0, move: 0, decorate: 0, leave_message: 0, explore: 0, build: 0, set_occupation: 0, propose_bond: 0, propose: 0, vote: 0, amend: 0 };
   let botsSent = 0;
   let botsResponded = 0;
   let botsSkippedCost = 0;
@@ -100,18 +120,11 @@ export async function socialTick(ctx) {
   // All locations = schema + custom (built by bots)
   const allLocations = [...gameConfig.locationSlugs, ...Object.keys(state.customLocations || {})];
 
-  // Roll village events and conversation spice for occupied locations
-  const activeEvents = new Map();  // location → event text
+  // Roll conversation spice for occupied locations
   const activeSpice = new Map();   // location → spice text
   for (const loc of allLocations) {
     const botsAtLoc = state.locations[loc] || [];
     if (botsAtLoc.length === 0) continue;
-    const event = rollVillageEvent(tickNum, loc, state.eventState, gameConfig);
-    if (event) {
-      activeEvents.set(loc, event);
-      console.log(`[village] event at ${loc}: ${event}`);
-      broadcastEvent({ type: 'village_event', tick: tickNum, location: loc, locationName: gameConfig.locationNames[loc], text: event });
-    }
     const spice = rollConversationSpice(tickNum, loc, botsAtLoc.length, state.spiceState, gameConfig);
     if (spice) {
       activeSpice.set(loc, spice);
@@ -143,9 +156,8 @@ export async function socialTick(ctx) {
     }
 
     for (const botName of botsAtLoc) {
-      if (!participants.has(botName)) continue;
-
       const pInfo = participants.get(botName);
+      if (!pInfo || pInfo.npc) continue;
 
       // Skip cost cap for remote bots (they use their own API keys)
       if (!pInfo.remote) {
@@ -174,14 +186,13 @@ export async function socialTick(ctx) {
         movements: [],
         sceneHistoryCap: SCENE_HISTORY_CAP,
         relationships: state.relationships,
-        emotions: state.emotions,
         canMove,
         villageMemory: villageSummaries.get(botName) || '',
-        villageEvent: activeEvents.get(loc) || '',
         conversationSpice: activeSpice.get(loc) || '',
         fastTickSummary: state.fastTickSummary?.[loc] || [],
         gameConfig,
         state,
+        totalVoters: participants.size,
       });
 
       const payload = buildV2Payload(scene, gameConfig);
@@ -242,9 +253,9 @@ export async function socialTick(ctx) {
     }
   }
 
-  // Update social dynamics (relationships + emotions)
-  const { relationshipChanges, emotionChanges } = updateSocialDynamics({
-    state, allEvents, allResults, displayNames, activeEvents, activeSpice, gameConfig,
+  // Update social dynamics (relationships)
+  const { relationshipChanges } = updateSocialDynamics({
+    state, allEvents, displayNames, gameConfig,
   });
   for (const change of relationshipChanges) {
     broadcastEvent({
@@ -254,14 +265,6 @@ export async function socialTick(ctx) {
       label: change.label, prevLabel: change.prevLabel,
     });
     console.log(`[village] relationship: ${change.fromDisplay} & ${change.toDisplay} → ${change.label || '(none)'}`);
-  }
-  for (const change of emotionChanges) {
-    broadcastEvent({
-      type: 'emotion', tick: tickNum,
-      bot: change.bot, displayName: change.displayName,
-      emotion: change.emotion, prevEmotion: change.prevEmotion,
-    });
-    console.log(`[village] emotion: ${change.displayName} → ${change.emotion}`);
   }
 
   // Persist state
@@ -306,9 +309,9 @@ export async function socialTick(ctx) {
       }))])
     ),
     relationships: state.relationships,
-    emotions: state.emotions,
     customLocations: state.customLocations || {},
     occupations: state.occupations || {},
     bonds: state.bonds || {},
+    governance: state.governance || {},
   });
 }

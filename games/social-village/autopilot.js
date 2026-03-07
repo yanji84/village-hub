@@ -60,9 +60,9 @@ function rollAmbient(location, autopilotState, gameConfig) {
 /**
  * Roll idle behavior for a bot.
  * ~idleChance per bot per fast tick.
- * Pool selection: 30% emotion → 40% location → 30% universal.
+ * Pool selection: 50% location → 50% universal.
  */
-function rollIdle(botName, displayName, location, emotion, gameConfig) {
+function rollIdle(botName, displayName, location, gameConfig) {
   const cfg = gameConfig.raw.autopilot;
   const behaviors = gameConfig.raw.idleBehaviors;
   if (!behaviors) return null;
@@ -72,14 +72,8 @@ function rollIdle(botName, displayName, location, emotion, gameConfig) {
   let pool = null;
   const roll = Math.random();
 
-  // 30% chance: emotion-specific pool
-  if (roll < 0.3 && emotion && emotion !== 'neutral') {
-    const emotionPool = behaviors.emotion?.[emotion];
-    if (emotionPool && emotionPool.length > 0) pool = emotionPool;
-  }
-
-  // 40% chance (or fallback): location-specific pool
-  if (!pool && roll < 0.7) {
+  // 50% chance: location-specific pool
+  if (roll < 0.5) {
     const locationPool = behaviors.location?.[location];
     if (locationPool && locationPool.length > 0) pool = locationPool;
   }
@@ -259,11 +253,10 @@ export function runSocialFastTick(state, gameConfig, participants) {
     const loc = findBotLocation(botName, state);
     if (!loc) continue;
 
-    const emotion = state.emotions?.[botName]?.emotion || 'neutral';
     const displayName = info.displayName || botName;
 
     // Idle behavior
-    const idle = rollIdle(botName, displayName, loc, emotion, gameConfig);
+    const idle = rollIdle(botName, displayName, loc, gameConfig);
     if (idle) events.push(idle);
 
     // Autonomous movement

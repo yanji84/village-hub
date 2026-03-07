@@ -26,6 +26,7 @@ import { generateWorld, placeInitialResources, mulberry32, randomEdgeTile } from
 import { getDayPhase } from './games/survival/scene.js';
 import { survivalTick, fastTick as survivalFastTick } from './games/survival/tick.js';
 import { socialTick } from './games/social-village/tick.js';
+import { initNPCs, runNPCTick } from './games/social-village/npcs.js';
 import { runSocialFastTick } from './games/social-village/autopilot.js';
 import { generateAppearance } from './games/social-village/appearance.js';
 
@@ -75,10 +76,7 @@ let state = {
   clock: { tick: 0, phase: 'morning', ticksInPhase: 0 },
   emptyTicks: {},
   relationships: {},
-  emotions: {},
-  eventState: {},
   spiceState: {},
-  stagnation: {},
   locationState: {},
   customLocations: {},
   occupations: {},
@@ -110,11 +108,8 @@ async function loadState() {
       clock: loaded.clock || { tick: 0, phase: 'morning', ticksInPhase: 0 },
       emptyTicks: loaded.emptyTicks || {},
       relationships: loaded.relationships || {},
-      emotions: loaded.emotions || {},
       villageCosts: loaded.villageCosts || {},
-      eventState: loaded.eventState || {},
       spiceState: loaded.spiceState || {},
-      stagnation: loaded.stagnation || {},
       locationState: loaded.locationState || {},
       customLocations: loaded.customLocations || {},
       occupations: loaded.occupations || {},
@@ -135,6 +130,10 @@ async function loadState() {
       if (!state.publicLogs[loc]) state.publicLogs[loc] = [];
       if (!state.emptyTicks[loc]) state.emptyTicks[loc] = 0;
     }
+    // Migration: remove deprecated state
+    delete state.emotions;
+    delete state.stagnation;
+    delete state.eventState;
     console.log(`[village] State loaded from ${source}: tick=${state.clock.tick} phase=${state.clock.phase} customLocations=${Object.keys(state.customLocations).length}`);
   }
 
@@ -346,6 +345,7 @@ async function recoverParticipants() {
   const toRemove = [];
 
   for (const botName of botsInState) {
+    if (botName.startsWith('npc-')) continue; // NPCs re-initialized by initNPCs
     try {
       const village = await villageManager.read(botName);
       if (!village.enabled) {
@@ -557,6 +557,7 @@ async function tick() {
       await survivalTick(ctx);
     } else {
       await socialTick(ctx);
+      await runNPCTick(ctx);
     }
     nextTickAt = ctx.nextTickAt;
   } catch (err) {
@@ -853,7 +854,6 @@ const server = createServer(async (req, res) => {
           }))])
         ),
         relationships: state.relationships,
-        emotions: state.emotions,
         publicLogs: Object.fromEntries(
           initAllLocs.filter(l => (state.publicLogs[l] || []).length > 0)
             .map(l => [l, state.publicLogs[l].map(e => ({
@@ -888,7 +888,7 @@ const server = createServer(async (req, res) => {
 
     // Filter events by current game type so survival events don't show in social UI and vice versa
     const SURVIVAL_TYPES = new Set(['survival_event', 'survival_tick', 'fast_tick', 'thinking']);
-    const SOCIAL_TYPES = new Set(['action', 'village_event', 'conversation_spice', 'ambient', 'idle', 'autopilot_move']);
+    const SOCIAL_TYPES = new Set(['action', 'conversation_spice', 'ambient', 'idle', 'autopilot_move']);
     function matchesGameType(ev) {
       if (isGridGame) {
         if (SOCIAL_TYPES.has(ev.type)) return false;
@@ -939,7 +939,87 @@ const server = createServer(async (req, res) => {
   // Serve static files
   if (path === '/' || path === '/index.html') {
     try {
-      const html = await readFile(join(__dirname, 'games', VILLAGE_GAME, 'observer.html'), 'utf-8');
+      let html = await readFile(join(__dirname, 'games', VILLAGE_GAME, 'observer.html'), 'utf-8');
+      // Inline ES modules for browser compatibility.
+      // Each module is wrapped in an IIFE for proper scope isolation,
+      // with exports returned and destructured using the import-side names.
+      const assetsDir = join(__dirname, 'games', VILLAGE_GAME, 'assets');
+      html = html.replace('<script type="module">', '<script>');
+      // Two-pass inlining: first collect all modules, then emit them.
+      // Each module is wrapped in an IIFE for scope isolation.
+      // A module-level var (_mod_<name>) stores the full export object so
+      // inter-module imports can resolve against it.
+      const moduleResults = {}; // filename → varName (e.g. "observer-utils.js" → "_mod_observer_utils")
+      const parseSpecifiers = (str) => str.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+        const parts = s.split(/\s+as\s+/);
+        return parts.length === 2
+          ? { imported: parts[0].trim(), local: parts[1].trim() }
+          : { imported: parts[0].trim(), local: parts[0].trim() };
+      });
+
+      html = html.replace(/^import\s+\{([^}]+)\}\s+from\s+'\.\/assets\/([^'?]+)(?:\?[^']*)?';\s*$/gm, (match, imports, filename) => {
+        try {
+          let code = require('fs').readFileSync(join(assetsDir, filename), 'utf-8');
+          const modVar = '_mod_' + filename.replace(/[^a-zA-Z0-9]/g, '_');
+          moduleResults[filename] = modVar;
+
+          // Parse the import specifiers from observer.html
+          const specifiers = parseSpecifiers(imports);
+
+          // Collect all exported names from the module source
+          const exportedNames = new Set();
+          for (const m of code.matchAll(/^export\s+(?:async\s+)?(?:function|const|let|var|class)\s+(\w+)/gm)) {
+            exportedNames.add(m[1]);
+          }
+          for (const m of code.matchAll(/^export\s+\{([^}]+)\}/gm)) {
+            for (const spec of m[1].split(',')) {
+              const name = spec.trim().split(/\s+as\s+/)[0].trim();
+              if (name) exportedNames.add(name);
+            }
+          }
+
+          // Strip export keywords
+          code = code.replace(/^export\s+(async\s+function|function|const|let|var|class)\s/gm, '$1 ');
+          code = code.replace(/^export\s+\{[^}]*\};\s*$/gm, '');
+
+          // Resolve inter-module imports: import { x } from './other.js' →
+          // var { x } = _mod_other_js;  (inside the IIFE)
+          code = code.replace(/^import\s+\{([^}]+)\}\s+from\s+'\.\/([^']+)';\s*$/gm, (m, specs, depFile) => {
+            const depVar = moduleResults[depFile];
+            if (!depVar) return `/* unresolved import: ${depFile} */`;
+            const depSpecs = parseSpecifiers(specs);
+            const destructure = depSpecs.map(s =>
+              s.imported === s.local ? s.local : `${s.imported}: ${s.local}`
+            ).join(', ');
+            return `var { ${destructure} } = ${depVar};`;
+          });
+
+          // Build return object and destructuring
+          const returnObj = [...exportedNames].join(', ');
+          const destructuring = specifiers.map(s =>
+            s.imported === s.local ? s.local : `${s.imported}: ${s.local}`
+          ).join(', ');
+
+          return [
+            `// --- ${filename} ---`,
+            `var ${modVar} = (function() {`,
+            code,
+            `return { ${returnObj} };`,
+            `})();`,
+            `var { ${destructuring} } = ${modVar};`,
+            `// --- end ${filename} ---`,
+          ].join('\n');
+        } catch (e) { return `/* failed to inline ${filename}: ${e.message} */\n${match}`; }
+      });
+      // Warn about renamed imports (import { x as y }) — easy source of bugs
+      for (const m of html.matchAll(/var \{ ([^}]+) \} = _mod_/g)) {
+        for (const part of m[1].split(',')) {
+          if (part.includes(':')) {
+            const [orig, alias] = part.split(':').map(s => s.trim());
+            console.warn(`[village] module inlining: "${orig}" renamed to "${alias}" — ensure code uses "${alias}" not "${orig}"`);
+          }
+        }
+      }
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(html);
     } catch {
@@ -951,7 +1031,7 @@ const server = createServer(async (req, res) => {
 
   // Serve game assets (images, etc.)
   if (path.startsWith('/assets/')) {
-    const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.json': 'application/json' };
+    const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.json': 'application/json', '.js': 'text/javascript' };
     const safeName = path.slice('/assets/'.length).replace(/\.\./g, '');
     const ext = safeName.slice(safeName.lastIndexOf('.'));
     const filePath = join(__dirname, 'games', VILLAGE_GAME, 'assets', safeName);
@@ -1038,6 +1118,9 @@ await mkdir(LOGS_DIR, { recursive: true });
 
 await loadState();
 await recoverParticipants();
+if (!isGridGame) {
+  initNPCs(state, participants, gameConfig);
+}
 
 server.listen(PORT, '127.0.0.1', () => {
   startTime = Date.now();

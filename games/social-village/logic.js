@@ -8,25 +8,10 @@
  * game schema JSON via game-loader.js and passed as `gameConfig`.
  */
 
-import { pairKey } from './relationship-engine.js';
+import { ACTION_HANDLERS } from './action-handlers.js';
 
-const MAX_WHISPERS_PER_BOT = 20;
-const MAX_DECORATIONS_PER_LOCATION = 10;
-const MAX_MESSAGES_PER_LOCATION = 20;
-const MAX_CUSTOM_LOCATIONS = 10;
-const EXPLORE_COOLDOWN_TICKS = 3;
-const BUILD_WINDOW_TICKS = 5;
-
-// --- Shared helpers ---
-
-/**
- * Ensure locationState exists for a given location, return it.
- */
-function ensureLocationState(state, location) {
-  if (!state.locationState) state.locationState = {};
-  if (!state.locationState[location]) state.locationState[location] = { decorations: [], messages: [] };
-  return state.locationState[location];
-}
+// Re-export governance functions for backwards compatibility
+export { ensureGovernance, resolveExpiredProposal } from './governance.js';
 
 /**
  * Roll a random village event for a location.
@@ -133,151 +118,16 @@ export function processActions(botName, actions, location, state, opts = {}) {
   const moveExclusive = hasMove && !onCooldown;
 
   for (const action of actions) {
-    // If moving this tick, skip non-move actions
     if (moveExclusive && action.tool !== 'village_move') continue;
 
-    switch (action.tool) {
-      case 'village_say': {
-        const msg = action.params?.message || '';
-        if (!msg) break;
-        const entry = { bot: botName, action: 'say', message: msg };
-        state.publicLogs[location].push(entry);
-        events.push(entry);
-        break;
-      }
-      case 'village_whisper': {
-        const target = action.params?.bot_id;
-        const msg = action.params?.message || '';
-        if (!target || !msg) break;
-        // Validate: target must be at same location
-        if (!state.locations[location]?.includes(target)) {
-          break;
-        }
-        // Queue whisper for next tick (capped to prevent unbounded growth)
-        if (!state.whispers[target]) state.whispers[target] = [];
-        if (state.whispers[target].length >= MAX_WHISPERS_PER_BOT) {
-          break;
-        }
-        state.whispers[target].push({ from: botName, message: msg });
-        events.push({ bot: botName, action: 'whisper', target, message: msg });
-        break;
-      }
-      case 'village_observe': {
-        events.push({ bot: botName, action: 'observe' });
-        break;
-      }
-      case 'village_move': {
-        if (onCooldown) break; // enforce cooldown
-        const dest = action.params?.location;
-        // Accept both schema locations and custom locations
-        const allValid = [...validLocations, ...Object.keys(state.customLocations || {})];
-        if (!dest || !allValid.includes(dest) || dest === location) {
-          break;
-        }
-        // Remove from current location
-        state.locations[location] = state.locations[location].filter(b => b !== botName);
-        // Add to new location
-        if (!state.locations[dest]) state.locations[dest] = [];
-        state.locations[dest].push(botName);
-        events.push({ bot: botName, action: 'move', from: location, to: dest });
-        // Record move tick for cooldown
-        if (lastMoveTick) lastMoveTick.set(botName, tick);
-        break;
-      }
+    const handler = ACTION_HANDLERS.get(action.tool);
+    if (!handler) continue;
 
-      // --- World-building actions ---
-
-      case 'village_decorate': {
-        const desc = (action.params?.description || '').slice(0, 200);
-        if (!desc) break;
-        const ls = ensureLocationState(state, location);
-        ls.decorations.push({ bot: botName, text: desc, tick });
-        if (ls.decorations.length > MAX_DECORATIONS_PER_LOCATION) ls.decorations.shift();
-        events.push({ bot: botName, action: 'decorate', decoration: desc });
-        break;
-      }
-
-      case 'village_leave_message': {
-        const msg = (action.params?.message || '').slice(0, 300);
-        if (!msg) break;
-        const ls = ensureLocationState(state, location);
-        ls.messages.push({ bot: botName, text: msg, tick });
-        if (ls.messages.length > MAX_MESSAGES_PER_LOCATION) ls.messages.shift();
-        events.push({ bot: botName, action: 'leave_message', message: msg });
-        break;
-      }
-
-      case 'village_read_messages': {
-        // Free action — just triggers event, messages shown in next scene
-        events.push({ bot: botName, action: 'read_messages' });
-        break;
-      }
-
-      case 'village_explore': {
-        if (!state.explorations) state.explorations = {};
-        const prev = state.explorations[botName];
-        if (prev && tick - prev.tick < EXPLORE_COOLDOWN_TICKS) break;
-        state.explorations[botName] = { from: location, tick };
-        events.push({ bot: botName, action: 'explore' });
-        break;
-      }
-
-      case 'village_build': {
-        if (!state.explorations) state.explorations = {};
-        if (!state.customLocations) state.customLocations = {};
-        const exploration = state.explorations[botName];
-        if (!exploration || tick - exploration.tick > BUILD_WINDOW_TICKS) break;
-        if (Object.keys(state.customLocations).length >= MAX_CUSTOM_LOCATIONS) break;
-        const name = (action.params?.name || '').slice(0, 30).trim();
-        const desc = (action.params?.description || '').slice(0, 200).trim();
-        if (!name || !desc) break;
-        // Generate slug from name
-        const slug = name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-').replace(/^-|-$/g, '') || `place-${tick}`;
-        // Don't allow duplicate slugs
-        if (state.customLocations[slug] || validLocations.includes(slug)) break;
-        // Create the location
-        state.customLocations[slug] = {
-          name,
-          flavor: desc,
-          createdBy: botName,
-          connectedTo: exploration.from,
-          tick,
-        };
-        // Initialize location state
-        if (!state.locations[slug]) state.locations[slug] = [];
-        if (!state.publicLogs[slug]) state.publicLogs[slug] = [];
-        if (!state.emptyTicks) state.emptyTicks = {};
-        state.emptyTicks[slug] = 0;
-        // Clear exploration state
-        delete state.explorations[botName];
-        events.push({ bot: botName, action: 'build', locationSlug: slug, locationName: name, locationDesc: desc, connectedTo: exploration.from });
-        break;
-      }
-
-      // --- Life sim actions ---
-
-      case 'village_set_occupation': {
-        const title = (action.params?.title || '').slice(0, 50).trim();
-        if (!title) break;
-        if (!state.occupations) state.occupations = {};
-        state.occupations[botName] = { title, since: tick };
-        events.push({ bot: botName, action: 'set_occupation', title });
-        break;
-      }
-
-      case 'village_propose_bond': {
-        const target = action.params?.target;
-        const bondType = (action.params?.bond_type || '').slice(0, 50).trim();
-        if (!target || !bondType) break;
-        // Validate: target must be at same location
-        if (!state.locations[location]?.includes(target)) break;
-        if (!state.bonds) state.bonds = {};
-        const key = pairKey(botName, target);
-        state.bonds[key] = { type: bondType, proposedBy: botName, tick };
-        events.push({ bot: botName, action: 'propose_bond', target, bondType });
-        break;
-      }
-    }
+    const ev = handler({
+      botName, params: action.params, location, state,
+      tick, validLocations, lastMoveTick, onCooldown,
+    });
+    if (ev) events.push(ev);
   }
 
   return events;

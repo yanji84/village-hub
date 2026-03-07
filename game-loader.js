@@ -41,8 +41,6 @@ export function loadGame(filePath) {
     phaseDescriptions[phase] = cfg.description;
   }
 
-  const emotionKeys = Object.keys(raw.emotions);
-
   return {
     raw,
     isGridGame: false,
@@ -53,13 +51,8 @@ export function loadGame(filePath) {
     phases,
     phaseDescriptions,
     timezone: raw.timezone,
-    events: raw.events,
-    eventConfig: raw.eventConfig,
     spice: raw.spice,
     spiceConfig: raw.spiceConfig,
-    emotions: raw.emotions,
-    emotionKeys,
-    emotionConfig: raw.emotionConfig,
     relationships: raw.relationships,
     tools: raw.tools,
     sceneLabels: raw.sceneLabels,
@@ -159,8 +152,8 @@ function validateGrid(raw, filePath) {
  * Validate required fields and cross-references in the social game schema.
  */
 function validate(raw, filePath) {
-  const required = ['id', 'locations', 'spawnLocation', 'phases', 'events', 'eventConfig',
-    'spice', 'spiceConfig', 'emotions', 'emotionConfig', 'relationships', 'tools', 'sceneLabels'];
+  const required = ['id', 'locations', 'spawnLocation', 'phases',
+    'spice', 'spiceConfig', 'relationships', 'tools', 'sceneLabels'];
 
   for (const field of required) {
     if (raw[field] === undefined || raw[field] === null) {
@@ -177,18 +170,6 @@ function validate(raw, filePath) {
     throw new Error(`Game schema ${filePath}: "spawnLocation" "${raw.spawnLocation}" is not a valid location key`);
   }
 
-  // Validate event location references
-  for (let i = 0; i < raw.events.length; i++) {
-    const ev = raw.events[i];
-    if (ev.locations) {
-      for (const loc of ev.locations) {
-        if (!locationSlugs.includes(loc)) {
-          throw new Error(`Game schema ${filePath}: events[${i}].locations contains unknown location "${loc}"`);
-        }
-      }
-    }
-  }
-
   // Validate phases have descriptions
   for (const [phase, cfg] of Object.entries(raw.phases)) {
     if (!cfg.description) {
@@ -196,10 +177,4 @@ function validate(raw, filePath) {
     }
   }
 
-  // Validate emotions have labels
-  for (const [emo, cfg] of Object.entries(raw.emotions)) {
-    if (cfg.label === undefined) {
-      throw new Error(`Game schema ${filePath}: emotions.${emo} missing "label"`);
-    }
-  }
 }

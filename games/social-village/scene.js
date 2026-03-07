@@ -5,9 +5,12 @@
  * It includes the current game phase, location, who else is there, recent conversation,
  * pending whispers, and available actions.
  *
- * All game content (locations, labels, emotions, etc.) comes from the game schema
+ * All game content (locations, labels, etc.) comes from the game schema
  * via the `gameConfig` parameter.
  */
+
+import { renderTemplate, addSection } from './utils.js';
+import { renderGovernanceSection } from './governance.js';
 
 /**
  * Get current village time in the given timezone.
@@ -29,48 +32,84 @@ export function getVillageTime(timezone) {
   return { phase, timeStr, dayStr, hour };
 }
 
+// --- Shared scene fragment helpers (used by buildScene and npcs.js) ---
+
 /**
- * Simple template renderer — replaces {key} placeholders in a string.
+ * Render location header: time/phase line + "you are at" line.
  */
-function renderTemplate(template, vars) {
-  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] !== undefined ? vars[key] : `{${key}}`);
+export function renderLocationHeader(lines, location, state, gameConfig) {
+  const { locationNames, locationFlavors, phaseDescriptions, timezone } = gameConfig;
+  const vt = getVillageTime(timezone);
+  lines.push(`${phaseDescriptions[vt.phase] || phaseDescriptions[Object.keys(phaseDescriptions)[0]]} ${vt.dayStr}，${vt.timeStr}。`);
+  const locName = locationNames[location] || state.customLocations?.[location]?.name || location;
+  const locFlavor = locationFlavors[location] || state.customLocations?.[location]?.flavor || '';
+  lines.push(`你在 **${locName}**。${locFlavor}`);
 }
 
 /**
- * Append a labeled section to lines if items is non-empty.
- * Adds blank line before header, renders each item, adds trailing blank line.
+ * Render "who's here" section with occupations.
  */
-function addSection(lines, header, items, renderItem) {
-  if (!items || items.length === 0) return;
+export function renderWhosHere(lines, botsHere, botDisplayNames, state, sceneLabels) {
+  if (botsHere.length === 0) {
+    lines.push(sceneLabels.aloneHere);
+  } else {
+    const names = botsHere.map(b => {
+      const dn = botDisplayNames[b] || b;
+      const occ = state.occupations?.[b];
+      if (occ) return `${dn}（${occ.title}）`;
+      return dn;
+    }).join('、');
+    lines.push(`也在这里：${names}`);
+  }
   lines.push('');
-  lines.push(header);
-  for (const item of items) lines.push(renderItem(item));
+}
+
+/**
+ * Render recent conversation log.
+ */
+export function renderConversationLog(lines, publicLog, botDisplayNames, sceneLabels, cap) {
+  const recentLog = (publicLog || []).slice(-cap);
+  if (recentLog.length === 0) return;
+  lines.push(sceneLabels.recentConversation);
+  for (const entry of recentLog) {
+    const name = botDisplayNames[entry.bot] || entry.bot;
+    if (entry.action === 'say') {
+      lines.push(`[${name} 说]："${entry.message}"`);
+    }
+  }
+  lines.push('');
+}
+
+/**
+ * Render pending whispers.
+ */
+export function renderWhispers(lines, whispers, botDisplayNames, sceneLabels) {
+  if (!whispers || whispers.length === 0) return;
+  lines.push(sceneLabels.whisperHeader);
+  for (const w of whispers) {
+    const name = botDisplayNames[w.from] || w.from;
+    lines.push(`[${name} 悄悄说]："${w.message}"`);
+  }
+  lines.push('');
+}
+
+/**
+ * Render available locations for movement.
+ */
+export function renderAvailableLocations(lines, currentLoc, gameConfig, state) {
+  const { locationNames, locationSlugs } = gameConfig;
+  const customSlugs = Object.keys(state.customLocations || {});
+  const allSlugs = [...locationSlugs, ...customSlugs];
+  const otherLocations = allSlugs.filter(l => l !== currentLoc);
+  lines.push(`可去的地方：${otherLocations.map(l => {
+    const n = locationNames[l] || state.customLocations?.[l]?.name || l;
+    return `${l}（${n}）`;
+  }).join('、')}`);
+  lines.push('');
 }
 
 /**
  * Build a scene prompt for a specific bot.
- *
- * @param {object} opts
- * @param {string} opts.botName - System name of this bot
- * @param {string} opts.botDisplayName - Display name of this bot
- * @param {string} opts.location - Current location slug
- * @param {string} opts.phase - Current game phase (morning/afternoon/evening)
- * @param {number} opts.tick - Current tick number
- * @param {string[]} opts.botsHere - System names of other bots at same location
- * @param {object} opts.botDisplayNames - Map of systemName → displayName
- * @param {Array} opts.publicLog - Recent public messages at this location
- * @param {Array} opts.whispers - Pending whispers for this bot
- * @param {Array} opts.movements - Recent movement events at this location
- * @param {number} opts.sceneHistoryCap - Max messages in public log (default 10)
- * @param {object} [opts.relationships] - state.relationships object
- * @param {object} [opts.emotions] - state.emotions object
- * @param {boolean} [opts.canMove=true] - Whether move action is available (false during cooldown)
- * @param {string} [opts.villageMemory] - Summarized village memory to include in prompt
- * @param {string} [opts.villageEvent] - Active village event text
- * @param {string} [opts.conversationSpice] - Active conversation spice text
- * @param {string[]} [opts.fastTickSummary] - Recent autopilot activity lines
- * @param {object} opts.gameConfig - Loaded game configuration
- * @returns {string} The scene prompt
  */
 export function buildScene({
   botName,
@@ -85,26 +124,20 @@ export function buildScene({
   movements,
   sceneHistoryCap = 10,
   relationships,
-  emotions,
   canMove = true,
   villageMemory = '',
-  villageEvent = '',
   conversationSpice = '',
   fastTickSummary = [],
   gameConfig,
   state = {},
+  totalVoters = 0,
 }) {
   const { locationNames, locationFlavors, phaseDescriptions, timezone,
-    emotions: emotionDefs, tools, sceneLabels } = gameConfig;
+    tools, sceneLabels } = gameConfig;
   const lines = [];
 
   // Time + phase + location
-  const vt = getVillageTime(timezone);
-  lines.push(`${phaseDescriptions[vt.phase] || phaseDescriptions[Object.keys(phaseDescriptions)[0]]} ${vt.dayStr}，${vt.timeStr}。`);
-  // Location name — check custom locations too
-  const locName = locationNames[location] || state.customLocations?.[location]?.name || location;
-  const locFlavor = locationFlavors[location] || state.customLocations?.[location]?.flavor || '';
-  lines.push(`你在 **${locName}**。${locFlavor}`);
+  renderLocationHeader(lines, location, state, gameConfig);
 
   // Decorations and messages at this location
   const ls = state.locationState?.[location];
@@ -115,7 +148,7 @@ export function buildScene({
 
   lines.push('');
 
-  // Who's here (with occupations)
+  // Who's here (with occupations) — full version with occupationTag template
   if (botsHere.length === 0) {
     lines.push(sceneLabels.aloneHere);
   } else {
@@ -179,19 +212,17 @@ export function buildScene({
     }
   }
 
-  // Current emotion
-  if (emotions && emotions[botName] && emotions[botName].emotion !== 'neutral') {
-    const emotionKey = emotions[botName].emotion;
-    const emotionLabel = emotionDefs[emotionKey]?.label || emotionKey;
-    lines.push(renderTemplate(sceneLabels.mood, { emotion: emotionLabel }));
-    lines.push('');
-  }
-
   // Village memory summary (high-level context from past interactions)
   if (villageMemory) {
     lines.push(sceneLabels.memory);
     lines.push(villageMemory);
     lines.push('');
+  }
+
+  // Governance section
+  const gov = state.governance;
+  if (gov) {
+    renderGovernanceSection(lines, gov, tick, botName, botDisplayNames, sceneLabels, totalVoters, renderTemplate);
   }
 
   // Movement events
@@ -208,12 +239,6 @@ export function buildScene({
         lines.push(renderTemplate(sceneLabels.leaveVillage, { name }));
       }
     }
-    lines.push('');
-  }
-
-  // Village event (environmental stimulus)
-  if (villageEvent) {
-    lines.push(`${sceneLabels.eventPrefix} ${villageEvent}`);
     lines.push('');
   }
 
@@ -240,8 +265,6 @@ export function buildScene({
       const name = botDisplayNames[entry.bot] || entry.bot;
       if (entry.action === 'say') {
         lines.push(renderTemplate(sceneLabels.sayFormat, { name, message: entry.message }));
-      } else if (entry.action === 'observe') {
-        lines.push(renderTemplate(sceneLabels.observeFormat, { name }));
       }
     }
     lines.push('');

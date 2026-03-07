@@ -1,9 +1,8 @@
 /**
- * Relationship & emotion engine — extracted from logic.js.
+ * Relationship engine — extracted from logic.js.
  *
- * Tracks pairwise relationships (interaction counts, labels) and per-bot
- * emotions (impulse-based with decay). Exposes a single high-level
- * `updateSocialDynamics()` for the tick orchestrator.
+ * Tracks pairwise relationships (interaction counts, labels).
+ * Exposes a single high-level `updateSocialDynamics()` for the tick orchestrator.
  */
 
 // --- Helpers ---
@@ -166,232 +165,22 @@ function decayRelationships(state, gameConfig) {
   }
 }
 
-// --- Emotion tracking ---
-
-/**
- * Update emotions for all bots based on tick events.
- *
- * @param {object} state - State with locations, emotions, clock
- * @param {Map<string, Array>} allEvents - location → events[]
- * @param {Array<{ botName: string, response: object|null, loc: string }>} allResults - scene results
- * @param {object} displayNames - botName → displayName map
- * @param {object} [opts] - Optional: { activeEvents, activeSpice }
- * @param {object} gameConfig - Loaded game configuration
- * @returns {Array<{ bot: string, displayName: string, emotion: string, prevEmotion: string }>} change events
- */
-function updateEmotions(state, allEvents, allResults, displayNames, opts = {}, gameConfig) {
-  if (!state.emotions) state.emotions = {};
-  const changes = [];
-
-  const { decay: EMOTION_DECAY, threshold: EMOTION_THRESHOLD } = gameConfig.emotionConfig;
-
-  // Build sets for quick lookup
-  const botsWithActions = new Set();
-  const botsWhispered = new Set();
-  const botsSaid = new Map(); // bot → count of others present when they spoke
-  const botsMoved = new Set();
-
-  for (const [loc, events] of allEvents) {
-    for (const ev of events) {
-      if (ev.action === 'say') {
-        botsWithActions.add(ev.bot);
-        const othersCount = (state.locations[loc] || []).filter(b => b !== ev.bot).length;
-        // Track max others present across all say events for this bot
-        const prev = botsSaid.get(ev.bot) || 0;
-        if (othersCount > prev) botsSaid.set(ev.bot, othersCount);
-      } else if (ev.action === 'whisper' && ev.target) {
-        botsWithActions.add(ev.bot);
-        botsWhispered.add(ev.target);
-      } else if (ev.action === 'move') {
-        botsWithActions.add(ev.bot);
-        botsMoved.add(ev.bot);
-      } else if (ev.action === 'observe') {
-        botsWithActions.add(ev.bot);
-      }
-    }
-  }
-
-  // Build set of bots that were sent a scene this tick
-  const botsSent = new Set(allResults.map(r => r.botName));
-
-  // Process each bot in any location
-  const allBots = new Set();
-  for (const loc of Object.keys(state.locations)) {
-    for (const bot of state.locations[loc]) allBots.add(bot);
-  }
-
-  // Update stagnation counters (consecutive ticks at same location)
-  if (!state.stagnation) state.stagnation = {};
-  for (const bot of allBots) {
-    if (botsMoved.has(bot)) {
-      state.stagnation[bot] = 0;
-    } else if (botsSent.has(bot)) {
-      state.stagnation[bot] = (state.stagnation[bot] || 0) + 1;
-    }
-  }
-
-  for (const bot of allBots) {
-    if (!botsSent.has(bot)) continue; // skip bots that weren't active this tick
-
-    if (!state.emotions[bot]) {
-      state.emotions[bot] = { emotion: 'neutral', intensity: 0, prevEmotion: 'neutral', since: state.clock.tick };
-    }
-
-    const emo = state.emotions[bot];
-
-    // 1. Decay current intensity
-    emo.intensity *= EMOTION_DECAY;
-
-    // 2. Compute impulses
-    const impulses = [];
-
-    if (botsWhispered.has(bot)) {
-      impulses.push({ emotion: 'happy', intensity: 0.8 });
-    }
-
-    if (botsSaid.has(bot)) {
-      const othersCount = botsSaid.get(bot);
-      if (othersCount >= 2) {
-        impulses.push({ emotion: 'content', intensity: 0.6 });
-      } else if (othersCount >= 1) {
-        impulses.push({ emotion: 'content', intensity: 0.4 });
-      }
-    }
-
-    if (botsMoved.has(bot)) {
-      impulses.push({ emotion: 'excited', intensity: 0.5 });
-    }
-
-    // Find bot's current location
-    let botLoc = null;
-    for (const loc of Object.keys(state.locations)) {
-      if (state.locations[loc].includes(bot)) { botLoc = loc; break; }
-    }
-
-    if (botLoc) {
-      const othersHere = (state.locations[botLoc] || []).filter(b => b !== bot);
-      if (othersHere.length === 0) {
-        // Alone — additive lonely
-        if (emo.emotion === 'lonely') {
-          impulses.push({ emotion: 'lonely', intensity: emo.intensity + 0.15 });
-        } else {
-          impulses.push({ emotion: 'lonely', intensity: 0.15 });
-        }
-      } else if (!botsWithActions.has(bot)) {
-        // Others present but no actions
-        impulses.push({ emotion: 'bored', intensity: 0.4 });
-      }
-    }
-
-    // --- Additional impulse triggers (environmental & random) ---
-
-    // Curious: village event active at bot's location
-    if (opts.activeEvents && botLoc && opts.activeEvents.get(botLoc)) {
-      impulses.push({ emotion: 'curious', intensity: 0.6 });
-    }
-
-    // Frustrated: stagnation — same location for 5+ ticks
-    if (state.stagnation && (state.stagnation[bot] || 0) >= 5) {
-      impulses.push({ emotion: 'frustrated', intensity: 0.5 });
-    }
-
-    // Playful: 5% random chance per tick
-    if (Math.random() < 0.05) {
-      impulses.push({ emotion: 'playful', intensity: 0.55 });
-    }
-
-    // Mischievous: 3% random chance per tick
-    if (Math.random() < 0.03) {
-      impulses.push({ emotion: 'mischievous', intensity: 0.6 });
-    }
-
-    // Skeptical: 10% chance when in a high-familiarity relationship (prevents mutual admiration lock)
-    if (state.relationships && botLoc) {
-      for (const [key, rel] of Object.entries(state.relationships)) {
-        const [a, b] = key.split('::');
-        if (a !== bot && b !== bot) continue;
-        if (rel.says > 50 && Math.random() < 0.10) {
-          impulses.push({ emotion: 'skeptical', intensity: 0.5 });
-          break;
-        }
-      }
-    }
-
-    // Nostalgic: 8% chance during evening/night
-    if (['evening', 'night'].includes(state.clock.phase) && Math.random() < 0.08) {
-      impulses.push({ emotion: 'nostalgic', intensity: 0.45 });
-    }
-
-    // Anxious: 6% chance when conversation spice is active at location
-    if (opts.activeSpice && botLoc && opts.activeSpice.get(botLoc)) {
-      if (Math.random() < 0.4) {
-        impulses.push({ emotion: 'anxious', intensity: 0.5 });
-      }
-    }
-
-    // 3. Pick strongest impulse
-    let best = null;
-    for (const imp of impulses) {
-      if (!best || imp.intensity > best.intensity) best = imp;
-    }
-
-    if (best && best.intensity > emo.intensity) {
-      const prevEmotion = emo.emotion;
-      emo.emotion = best.emotion;
-      emo.intensity = Math.min(best.intensity, 1.0);
-      emo.since = state.clock.tick;
-
-      if (prevEmotion !== emo.emotion) {
-        emo.prevEmotion = prevEmotion;
-        changes.push({
-          bot,
-          displayName: displayNames[bot] || bot,
-          emotion: emo.emotion,
-          prevEmotion,
-        });
-      }
-    }
-
-    // 4. Reset to neutral if below threshold
-    if (emo.intensity < EMOTION_THRESHOLD) {
-      if (emo.emotion !== 'neutral') {
-        const prevEmotion = emo.emotion;
-        emo.prevEmotion = prevEmotion;
-        emo.emotion = 'neutral';
-        emo.intensity = 0;
-        emo.since = state.clock.tick;
-        changes.push({
-          bot,
-          displayName: displayNames[bot] || bot,
-          emotion: 'neutral',
-          prevEmotion,
-        });
-      }
-    }
-  }
-
-  return changes;
-}
-
 // --- High-level orchestrator API ---
 
 /**
  * Run all social dynamics for a tick: relationship tracking, co-location,
- * label updates, decay, and emotion updates.
+ * label updates, and decay.
  *
  * Returns structured change events for the tick orchestrator to broadcast.
  *
  * @param {object} opts
  * @param {object} opts.state - Full game state (mutated)
  * @param {Map<string, Array>} opts.allEvents - location → events[]
- * @param {Array} opts.allResults - scene results from bots
  * @param {object} opts.displayNames - botName → displayName map
- * @param {Map} opts.activeEvents - location → event text
- * @param {Map} opts.activeSpice - location → spice text
  * @param {object} opts.gameConfig - Loaded game configuration
- * @returns {{ relationshipChanges: Array, emotionChanges: Array }}
+ * @returns {{ relationshipChanges: Array }}
  */
-export function updateSocialDynamics({ state, allEvents, allResults, displayNames, activeEvents, activeSpice, gameConfig }) {
+export function updateSocialDynamics({ state, allEvents, displayNames, gameConfig }) {
   // Track interactions from this tick's events
   trackInteractions(allEvents, state);
 
@@ -404,8 +193,5 @@ export function updateSocialDynamics({ state, allEvents, allResults, displayName
   // Decay relationships for non-co-located pairs
   decayRelationships(state, gameConfig);
 
-  // Update emotions
-  const emotionChanges = updateEmotions(state, allEvents, allResults, displayNames, { activeEvents, activeSpice }, gameConfig);
-
-  return { relationshipChanges, emotionChanges };
+  return { relationshipChanges };
 }
