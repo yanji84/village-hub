@@ -339,6 +339,15 @@ export function handlePropose(ctx) {
     proposal.buildName = bName;
     proposal.buildDescription = bDesc;
     proposal.buildConnectedTo = location || 'central-square';
+    // Optional: specify tools for the new building (whitelist only safe tools)
+    if (Array.isArray(params?.build_tools) && params.build_tools.length > 0) {
+      const SAFE_TOOLS = new Set([
+        'village_say', 'village_whisper', 'village_move', 'village_leave_message',
+        'village_memory_search',
+      ]);
+      const filtered = params.build_tools.filter(t => SAFE_TOOLS.has(t));
+      if (filtered.length > 0) proposal.buildTools = filtered;
+    }
   } else if (pType === 'amendment') {
     const aText = (params?.amendment_text || '').trim();
     if (!aText) return null;

@@ -7,17 +7,40 @@
   "locations": {
     "central-square": {
       "name": "中央广场",
-      "flavor": "村庄中心广场，有石板地和喷泉。所有人的出生点，适合打招呼、闲聊、随意碰面。"
+      "flavor": "村庄中心广场，有石板地和喷泉。所有人的出生点，适合打招呼、闲聊、随意碰面。",
+      "purpose": "社交中心——聊天、交流"
     },
-    "workshop": {
-      "name": "创客空间",
-      "flavor": "创客空间，有工具和工作台。适合一起头脑风暴、协作创作、搞项目。"
+    "town-hall": {
+      "name": "议事堂",
+      "flavor": "庄严的议事堂，长桌和投票箱。村庄治理的中心——提案、投票、建设都在这里进行。",
+      "purpose": "治理中心——提案、投票、建造、法令"
+    },
+    "library": {
+      "name": "藏书阁",
+      "flavor": "安静的藏书阁，书架林立，墙上贴满研究笔记。可以查阅外界新闻，也可以在留言板上分享发现。",
+      "purpose": "知识中心——研究新闻、留言分享"
+    },
+    "temple": {
+      "name": "静思殿",
+      "flavor": "幽静的殿堂，檀香袅袅。这里是沉思与内省的圣地——请保持安静，禁止交谈。",
+      "purpose": "冥想圣地——深度内省（禁止交谈）"
     },
     "prison": {
       "name": "监狱",
-      "flavor": "阴暗的监狱，铁栏杆和石墙。被村长流放的村民会被关在这里，流放期间无法离开。"
+      "flavor": "阴暗的监狱，铁栏杆和石墙。被村长流放的村民会被关在这里，流放期间无法离开。",
+      "purpose": "流放之地——无法离开"
     }
   },
+
+  "locationTools": {
+    "central-square": ["village_say", "village_whisper", "village_move", "village_memory_search"],
+    "town-hall": ["village_say", "village_whisper", "village_move", "village_memory_search", "village_propose", "village_vote", "village_build", "village_decree", "village_exile"],
+    "library": ["village_say", "village_whisper", "village_move", "village_memory_search", "village_leave_message", "village_research"],
+    "temple": ["village_move", "village_memory_search", "village_meditate"],
+    "prison": ["village_say", "village_whisper", "village_memory_search"]
+  },
+
+  "defaultLocationTools": ["village_say", "village_whisper", "village_move", "village_leave_message", "village_memory_search"],
 
   "spawnLocation": "central-square",
 
@@ -72,8 +95,12 @@
       "description": "【仅村长可用】将一名村民关进监狱（5轮内不能移动）"
     },
     {
-      "id": "village_reflect",
-      "description": "记录想法、更新目标（不占动作数，只有你能看到）"
+      "id": "village_research",
+      "description": "【藏书阁专属】搜索外界新闻，把发现贴在留言板上"
+    },
+    {
+      "id": "village_meditate",
+      "description": "【静思殿专属】深度冥想，获得关于自身的洞察（不占动作数）"
     }
   ],
 
@@ -98,7 +125,7 @@
     "messagesHeader": "墙上的留言：",
     "occupationTag": "（{title}）",
     "customLocationTag": "（{creator}建造）",
-    "journalGuidance": "用 village_reflect 记录想法、更新目标——只有你能看到，帮助你记住村庄里发生的事。",
+    "journalGuidance": "",
     "constitutionHeader": "【村庄宪法】",
     "governmentHeader": "【现任政府】",
     "mayorLabel": "村长：{name}（第 {tick} 轮，共 {term} 轮任期）",
@@ -190,6 +217,11 @@
             "type": "string",
             "description": "Description of the building (only for build proposals, max 200 chars)"
           },
+          "build_tools": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Tools available at the new building (only for build proposals, optional — defaults to basic tools: say, whisper, move, leave_message, memory_search)"
+          },
           "amendment_text": {
             "type": "string",
             "description": "Full updated constitution text (only for amendment proposals)"
@@ -252,14 +284,30 @@
       }
     },
     {
-      "name": "village_reflect",
-      "description": "Record a private thought and/or update your personal goal. Only you can see this. Use it to remember important moments and guide your decisions. This is a free action.",
+      "name": "village_research",
+      "description": "Search real-world news headlines by keyword and post your findings to the library board. Only available in the library.",
       "parameters": {
         "type": "object",
         "properties": {
-          "thought": { "type": "string", "description": "A journal thought or reflection (max 500 chars, optional)" },
-          "goal": { "type": "string", "description": "Your personal goal or agenda (max 200 chars, optional)" }
-        }
+          "topic": { "type": "string", "description": "Search keyword for news headlines (max 100 chars)" },
+          "note": { "type": "string", "description": "Your annotation or comment on the finding (optional, max 300 chars)" }
+        },
+        "required": ["topic"]
+      }
+    },
+    {
+      "name": "village_meditate",
+      "description": "Deep meditation to gain insight about yourself. Only available in the temple. This is a free action.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "focus": {
+            "type": "string",
+            "enum": ["relationships", "goals", "village"],
+            "description": "What to meditate on: relationships (bonds with others), goals (your purpose), or village (the community)"
+          }
+        },
+        "required": ["focus"]
       }
     }
   ],

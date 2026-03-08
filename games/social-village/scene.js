@@ -97,14 +97,16 @@ export function renderWhispers(lines, whispers, botDisplayNames, sceneLabels) {
  * Render available locations for movement.
  */
 export function renderAvailableLocations(lines, currentLoc, gameConfig, state) {
-  const { locationNames, locationSlugs } = gameConfig;
+  const { locationNames, locationSlugs, locationPurposes } = gameConfig;
   const customSlugs = Object.keys(state.customLocations || {});
   const allSlugs = [...locationSlugs, ...customSlugs];
   const otherLocations = allSlugs.filter(l => l !== currentLoc);
-  lines.push(`可去的地方：${otherLocations.map(l => {
+  lines.push('可去的地方：');
+  for (const l of otherLocations) {
     const n = locationNames[l] || state.customLocations?.[l]?.name || l;
-    return `${l}（${n}）`;
-  }).join('、')}`);
+    const purpose = locationPurposes?.[l] || state.customLocations?.[l]?.flavor || '';
+    lines.push(`- **${l}**（${n}）${purpose ? `— ${purpose}` : ''}`);
+  }
   lines.push('');
 }
 
@@ -161,7 +163,6 @@ export function buildScene({
   const DEFAULT_AGENDA = '积极参与村庄生活——社交、提议、投票、建造新地点。让村庄不断发展壮大。';
   const agendaText = state.agendas?.[botName]?.goal || DEFAULT_AGENDA;
   lines.push(`你的目标：${agendaText}`);
-  lines.push('用 village_reflect 随时更新你的目标或记录想法。');
   lines.push('');
 
   // Village memory summary (high-level context from past interactions)
@@ -226,9 +227,15 @@ export function buildScene({
     lines.push('');
   }
 
-  // Available actions
+  // Available actions — filtered by location
+  const locationToolIds = new Set(
+    gameConfig.locationTools[location] ||
+    state.customLocations?.[location]?.tools ||
+    gameConfig.defaultLocationTools
+  );
   lines.push(sceneLabels.availableActions);
   for (const tool of tools) {
+    if (!locationToolIds.has(tool.id)) continue;
     if (tool.id === 'village_move') {
       if (canMove) {
         lines.push(`- **${tool.id}**：${tool.description}`);
@@ -243,15 +250,17 @@ export function buildScene({
   lines.push('');
 
   if (canMove) {
-    // Available locations (for move) — include custom locations
-    const { locationSlugs } = gameConfig;
+    // Available locations (for move) — include custom locations, show purpose
+    const { locationSlugs, locationPurposes } = gameConfig;
     const customSlugs = Object.keys(state.customLocations || {});
     const allSlugs = [...locationSlugs, ...customSlugs];
     const otherLocations = allSlugs.filter(l => l !== location);
-    lines.push(`${sceneLabels.availableLocations}${otherLocations.map(l => {
+    lines.push(sceneLabels.availableLocations);
+    for (const l of otherLocations) {
       const n = locationNames[l] || state.customLocations?.[l]?.name || l;
-      return `${l}（${n}）`;
-    }).join('、')}`);
+      const purpose = locationPurposes?.[l] || state.customLocations?.[l]?.flavor || '';
+      lines.push(`- **${l}**（${n}）${purpose ? `— ${purpose}` : ''}`);
+    }
     lines.push('');
     lines.push(sceneLabels.moveExclusive);
   } else {

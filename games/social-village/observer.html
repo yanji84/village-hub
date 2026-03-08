@@ -1245,7 +1245,6 @@ function actionLogHtml(d) {
     case 'build':          return `\uD83C\uDFD7 <span class="b">${esc(nm)}</span> <span class="j">建造了 <b>${esc(d.locationName)}</b>：${esc(d.locationDesc)}</span>`;
     case 'propose':        return `\uD83D\uDCCB <span class="b">${esc(nm)}</span> <span class="j">提议：<b>${esc(d.description)}</b></span>`;
     case 'vote':           return `\uD83D\uDDF3 <span class="b">${esc(nm)}</span> <span class="j">投票 <b>${d.vote === 'yes' ? '赞成' : '反对'}</b>${d.reason ? '：' + esc(d.reason) : ''}</span>`;
-    case 'reflect':        return `\uD83D\uDCA1 <span class="b">${esc(nm)}</span> <span class="k">思考中...</span>`;
     case 'decree':         return `\uD83D\uDCDC <span class="b">${esc(nm)}</span> <span class="m">发布法令：「${esc(d.text)}」</span>`;
     case 'exile':          return `\u26D4 <span class="b">${esc(nm)}</span> <span class="m">将 ${esc(tgt())} 关进监狱</span>`;
     default: return null;
@@ -1555,6 +1554,7 @@ document.getElementById('top-bar').addEventListener('click', (e) => {
 
 let customLocations = {};
 let npcProfiles = [];
+let agendas = {};
 
 // ========== VILLAGERS PANEL (NPC + memories + locations) ==========
 function renderVillagers() {
@@ -1569,6 +1569,21 @@ function renderVillagers() {
       html += '<span class="npc-card-name">' + esc(p.displayName) + '</span>';
       html += '<span class="npc-card-occ">' + esc(p.occupation) + '</span>';
       html += '<div class="npc-card-agenda">' + esc(p.agenda) + '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // Bot agendas (real bots only)
+  const npcNames = new Set(npcProfiles.map(p => p.name));
+  const agendaEntries = Object.entries(agendas).filter(([name]) => !npcNames.has(name));
+  if (agendaEntries.length > 0) {
+    html += '<div class="info-section"><div class="info-label">Bot 目标</div>';
+    for (const [botName, a] of agendaEntries) {
+      const dn = (sprites[botName] || {}).dn || botName;
+      html += '<div class="npc-card">';
+      html += '<span class="npc-card-name" style="color:#6af">' + esc(dn) + '</span>';
+      html += '<div class="npc-card-agenda">' + esc(a.goal) + '</div>';
       html += '</div>';
     }
     html += '</div>';
@@ -1639,7 +1654,6 @@ function renderGuide() {
       { icon: '\uD83D\uDDF3', name: 'village_vote', label: '投票', desc: '对活跃提案投票', detail: '对当前活跃的提案投赞成或反对票。每人只能投一次。' },
     ]},
     { group: '个人', items: [
-      { icon: '\uD83D\uDCA1', name: 'village_reflect', label: '思考', desc: '记录想法、更新目标', detail: '记录私人想法（最多500字）和/或更新个人目标（最多200字）。只有自己能看到。', free: true },
       { icon: '\uD83D\uDD0D', name: 'village_memory_search', label: '搜索记忆', desc: '搜索过去的村庄记忆', detail: '按关键词搜索自己的村庄记忆（总结和近期记录）。', free: true },
     ]},
   ];
@@ -1799,6 +1813,7 @@ function onEvent(d) {
       if (d.memories) memories = d.memories;
       if (d.locationFlavors) locationFlavors = d.locationFlavors;
       if (d.newsBulletins) { newsBulletins = d.newsBulletins; renderNews(); }
+      if (d.agendas) agendas = d.agendas;
       if (d.npcProfiles) { npcProfiles = d.npcProfiles; renderVillagers(); }
       // Batch-register all dynamic locations first, then layout + rebuild once
       let needsRebuild = false;
@@ -1908,6 +1923,7 @@ function onEvent(d) {
       if (d.governance) { governance = d.governance; renderGov(); }
       if (d.exiles) exiles = d.exiles;
       if (d.memories) { memories = d.memories; renderVillagers(); }
+      if (d.agendas) { agendas = d.agendas; renderVillagers(); }
       if (d.newsBulletins) { newsBulletins = d.newsBulletins; renderNews(); }
       {
       let needsRebuild = false;

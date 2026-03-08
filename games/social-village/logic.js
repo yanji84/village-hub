@@ -67,7 +67,7 @@ export function rollVillageEvent(tick, location, eventState, gameConfig) {
  */
 export function processActions(botName, actions, location, state, opts = {}) {
   const events = [];
-  const { lastMoveTick, tick, validLocations = [] } = opts;
+  const { lastMoveTick, tick, validLocations = [], gameConfig } = opts;
 
   // Move cooldown: reject move if bot moved last tick
   const onCooldown = lastMoveTick && tick != null
@@ -75,8 +75,15 @@ export function processActions(botName, actions, location, state, opts = {}) {
 
   // Free actions — always processed, even during move
   const FREE_ACTIONS = new Set([
-    'village_reflect', 'village_memory_search',
+    'village_memory_search', 'village_meditate',
   ]);
+
+  // Location tool filtering — server-side enforcement
+  const locationToolIds = gameConfig ? new Set(
+    gameConfig.locationTools[location] ||
+    state.customLocations?.[location]?.tools ||
+    gameConfig.defaultLocationTools
+  ) : null;
 
   // Check if bot wants to move — if so, move is exclusive (skip other non-free actions)
   const hasMove = actions.some(a =>
@@ -87,6 +94,9 @@ export function processActions(botName, actions, location, state, opts = {}) {
 
   for (const action of actions) {
     if (moveExclusive && action.tool !== 'village_move' && !FREE_ACTIONS.has(action.tool)) continue;
+
+    // Server-side location tool enforcement (free actions bypass)
+    if (locationToolIds && !FREE_ACTIONS.has(action.tool) && !locationToolIds.has(action.tool)) continue;
 
     const handler = ACTION_HANDLERS.get(action.tool);
     if (!handler) continue;

@@ -790,6 +790,52 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // --- Agenda endpoint (get/set bot agenda via owner DM) ---
+
+  const agendaMatch = path.match(/^\/api\/agenda\/([^/]+)$/);
+  if (agendaMatch) {
+    if (!validateVillageSecret(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+
+    const botName = agendaMatch[1];
+
+    if (req.method === 'GET') {
+      const agenda = state.agendas?.[botName]?.goal || null;
+      let loc = null;
+      for (const [l, bots] of Object.entries(state.locations)) {
+        if ((bots || []).includes(botName)) { loc = l; break; }
+      }
+      const locName = loc ? (gameConfig.locationNames[loc] || state.customLocations?.[loc]?.name || loc) : null;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ botName, agenda, location: loc, locationName: locName }));
+      return;
+    }
+
+    if (req.method === 'POST') {
+      let body;
+      try { body = await readJsonBody(req); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+      const goal = (body?.goal || '').slice(0, 200).trim();
+      if (!goal) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing goal' }));
+        return;
+      }
+      if (!state.agendas) state.agendas = {};
+      state.agendas[botName] = { goal, since: state.clock.tick };
+      await saveState();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, goal }));
+      return;
+    }
+  }
+
   if (path === '/events' && req.method === 'GET') {
     // SSE stream — public, no auth required
     res.writeHead(200, {

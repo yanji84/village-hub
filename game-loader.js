@@ -30,9 +30,11 @@ export function loadGame(filePath) {
   const locationSlugs = Object.keys(raw.locations);
   const locationNames = {};
   const locationFlavors = {};
+  const locationPurposes = {};
   for (const [slug, loc] of Object.entries(raw.locations)) {
     locationNames[slug] = loc.name;
     locationFlavors[slug] = loc.flavor;
+    if (loc.purpose) locationPurposes[slug] = loc.purpose;
   }
 
   const phases = Object.keys(raw.phases);
@@ -47,12 +49,15 @@ export function loadGame(filePath) {
     locationSlugs,
     locationNames,
     locationFlavors,
+    locationPurposes,
     spawnLocation: raw.spawnLocation,
     phases,
     phaseDescriptions,
     timezone: raw.timezone,
     tools: raw.tools,
     sceneLabels: raw.sceneLabels,
+    locationTools: raw.locationTools || {},
+    defaultLocationTools: raw.defaultLocationTools || raw.tools.map(t => t.id),
   };
 }
 

@@ -46,7 +46,7 @@ const NPC_PROFILES = [
   {
     name: 'npc-bartender',
     displayName: '阿杰',
-    homeLocation: 'coffee-hub',
+    homeLocation: 'town-hall',
     tickFrequency: 2,
     tickOffset: 1,
     variant: 4,
@@ -66,7 +66,7 @@ const NPC_PROFILES = [
   {
     name: 'npc-priest',
     displayName: '慧明',
-    homeLocation: 'knowledge-corner',
+    homeLocation: 'library',
     tickFrequency: 2,
     tickOffset: 1,
     variant: 8,
@@ -212,10 +212,16 @@ function buildNPCScene(npcProfile, location, state, gameConfig, participants, ti
     renderGovernanceSection(lines, state.governance, tick, npcProfile.name, displayNames, sceneLabels, participants.size, renderTemplate, state);
   }
 
-  // Full action list from gameConfig
+  // Action list filtered by location
+  const locationToolIds = new Set(
+    gameConfig.locationTools[location] ||
+    state.customLocations?.[location]?.tools ||
+    gameConfig.defaultLocationTools
+  );
   lines.push('可用动作：');
   const allSchemas = gameConfig.raw.toolSchemas || [];
   for (const s of allSchemas) {
+    if (!locationToolIds.has(s.name)) continue;
     lines.push(`- **${s.name}**：${s.description}`);
   }
   lines.push('');
@@ -232,10 +238,16 @@ function buildNPCScene(npcProfile, location, state, gameConfig, participants, ti
  * Call Anthropic API directly via api-router for an NPC.
  * Returns { actions: [{tool, params}], usage } or null on error.
  */
-function callNPCLLM(scene, npcProfile, gameConfig) {
+function callNPCLLM(scene, npcProfile, gameConfig, location, state) {
   // Build filtered tool schemas (parameters → input_schema for Anthropic API)
+  const locationToolIds = new Set(
+    gameConfig.locationTools[location] ||
+    state?.customLocations?.[location]?.tools ||
+    gameConfig.defaultLocationTools
+  );
   const allSchemas = gameConfig.raw.toolSchemas || [];
   const tools = allSchemas
+    .filter(s => locationToolIds.has(s.name))
     .map(s => ({
       name: s.name,
       description: s.description,
@@ -371,7 +383,7 @@ export async function runNPCTick(ctx) {
     const scene = buildNPCScene(npc, currentLoc, state, gameConfig, participants, tick);
 
     // Call LLM
-    const result = await callNPCLLM(scene, npc, gameConfig);
+    const result = await callNPCLLM(scene, npc, gameConfig, currentLoc, state);
     if (!result) {
       npcErrors++;
       console.log(`[npc] ${npc.name} skipped (API error)`);
@@ -389,7 +401,7 @@ export async function runNPCTick(ctx) {
     // Process actions through the same pipeline as regular bots
     const allLocations = [...gameConfig.locationSlugs, ...Object.keys(state.customLocations || {})];
     const events = processActions(npc.name, result.actions, currentLoc, state, {
-      lastMoveTick, tick, validLocations: allLocations,
+      lastMoveTick, tick, validLocations: allLocations, gameConfig,
     });
 
     npcActions += events.length;

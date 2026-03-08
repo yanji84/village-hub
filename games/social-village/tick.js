@@ -20,15 +20,23 @@ import {
 import { buildMemoryEntry, appendVillageMemory } from '../../memory.js';
 import { rollNewsBulletin } from './news.js';
 
-function buildV2Payload(scene, gameConfig) {
+function buildV2Payload(scene, gameConfig, location, state, botName) {
+  const allSchemas = gameConfig.raw.toolSchemas || [];
+  const locationToolIds = new Set(
+    gameConfig.locationTools[location] ||
+    state?.customLocations?.[location]?.tools ||
+    gameConfig.defaultLocationTools
+  );
+  const filteredTools = allSchemas.filter(s => locationToolIds.has(s.name));
   return {
     v: 2,
     scene,
-    tools: gameConfig.raw.toolSchemas || [],
+    tools: filteredTools,
     systemPrompt: gameConfig.raw.systemPrompt || null,
     allowedReads: gameConfig.raw.allowedReads || [],
     maxActions: gameConfig.raw.maxActions || 2,
     journalConfig: gameConfig.raw.journalConfig || null,
+    agenda: state.agendas?.[botName]?.goal || null,
   };
 }
 
@@ -37,6 +45,9 @@ const SUMMARIZE_MAX_TOKENS = 600;
 const API_ROUTER_URL = 'http://127.0.0.1:9090';
 const NPC_API_TOKEN = process.env.NPC_API_TOKEN || '';
 const KEEP_RECENT = 20;
+
+// Pending memory entries for remote bots — delivered in the next tick's payload
+const pendingRemoteMemory = new Map(); // botName → entry string
 
 /**
  * Summarize old memory entries for a bot using Haiku.
@@ -198,7 +209,7 @@ export async function socialTick(ctx) {
 
   // Build scenes and collect actions per location
   const allEvents = new Map(); // location → events[]
-  const actionCounts = { say: 0, whisper: 0, move: 0, leave_message: 0, build: 0, reflect: 0, propose: 0, vote: 0, decree: 0, exile: 0 };
+  const actionCounts = { say: 0, whisper: 0, move: 0, leave_message: 0, build: 0, propose: 0, vote: 0, decree: 0, exile: 0, research: 0, meditate: 0 };
   let botsSent = 0;
   let botsResponded = 0;
   let botsSkippedCost = 0;
@@ -269,7 +280,16 @@ export async function socialTick(ctx) {
         totalVoters: participants.size,
       });
 
-      const payload = buildV2Payload(scene, gameConfig);
+      const payload = buildV2Payload(scene, gameConfig, loc, state, botName);
+
+      // Attach pending memory entry from previous tick (remote bots only)
+      const prevEntry = pendingRemoteMemory.get(botName);
+      if (prevEntry) {
+        payload.memoryEntry = prevEntry;
+        pendingRemoteMemory.delete(botName);
+        console.log(`[memory] Delivering memoryEntry to ${botName} (${prevEntry.length} chars)`);
+      }
+
       allSceneRequests.push({ botName, conversationId, payload, loc });
     }
   }
@@ -299,7 +319,7 @@ export async function socialTick(ctx) {
 
     botsResponded++;
     const events = processActions(botName, response.actions, loc, state, {
-      lastMoveTick, tick: tickNum, validLocations: gameConfig.locationSlugs,
+      lastMoveTick, tick: tickNum, validLocations: gameConfig.locationSlugs, gameConfig,
     });
     allEvents.get(loc).push(...events);
 
@@ -357,12 +377,19 @@ export async function socialTick(ctx) {
       if (!state.memories[botName]) state.memories[botName] = { summary: '', recent: [] };
       state.memories[botName].recent.push(entry);
 
-      // Filesystem sync for non-NPC, non-remote bots
+      // Filesystem sync for non-NPC bots
       const pInfo = participants.get(botName);
-      if (pInfo && !pInfo.npc && !pInfo.remote) {
-        appendVillageMemory(botName, entry, { filename: MEMORY_FILENAME }).catch(err => {
-          console.error(`[memory] Failed to sync ${botName}: ${err.message}`);
-        });
+      if (pInfo && !pInfo.npc) {
+        if (pInfo.remote) {
+          // Cache for delivery in next tick's payload → plugin writes locally
+          pendingRemoteMemory.set(botName, entry);
+          console.log(`[memory] Queued memoryEntry for remote ${botName} (${entry.length} chars)`);
+        } else {
+          appendVillageMemory(botName, entry, { filename: MEMORY_FILENAME }).catch(err => {
+            console.error(`[memory] Failed to sync ${botName}: ${err.message}`);
+          });
+          console.log(`[memory] Wrote memoryEntry for local ${botName} (${entry.length} chars)`);
+        }
       }
     }
   }
