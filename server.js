@@ -14,7 +14,7 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile, writeFile, rename, copyFile, mkdir, readdir, stat } from 'node:fs/promises';
-import { appendFileSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadGame } from './game-loader.js';
@@ -52,6 +52,26 @@ const LOGS_DIR = _dataDir ? join(_dataDir, 'logs') : join(__dirname, 'logs');
 // --- Event log file (JSONL, one file per day) ---
 let logDate = '';   // 'YYYY-MM-DD'
 let logFile = '';   // full path to current day's .jsonl
+
+// Async log buffer — batches writes within a 100ms window to avoid
+// blocking the event loop with a sync write on every game event.
+const _logBuffer = [];
+let _logFlushTimer = null;
+
+function _flushLogBuffer() {
+  _logFlushTimer = null;
+  if (!_logBuffer.length || !logFile) return;
+  const lines = _logBuffer.splice(0).join('');
+  appendFile(logFile, lines).catch(err => {
+    console.error(`[village] Failed to flush event log: ${err.message}`);
+  });
+}
+
+function flushLogBufferSync() {
+  // Called on graceful shutdown to ensure no events are lost.
+  if (_logFlushTimer) { clearTimeout(_logFlushTimer); _logFlushTimer = null; }
+  _flushLogBuffer();
+}
 
 // --- State ---
 let state = {};
@@ -91,21 +111,23 @@ async function loadState() {
   console.log('[village] Fresh state initialized');
 }
 
+let _saveInProgress = false;
+let _savePending    = false;
+
 async function saveState() {
+  if (_saveInProgress) { _savePending = true; return; }
+  _saveInProgress = true;
   try {
     const tmpFile = STATE_FILE + '.tmp';
     const bakFile = STATE_FILE + '.bak';
-
-    // Write to tmp file first
     await writeFile(tmpFile, JSON.stringify(state, null, 2) + '\n');
-
-    // Backup current state.json before overwriting
     try { await copyFile(STATE_FILE, bakFile); } catch { /* no existing state to backup */ }
-
-    // Atomic rename (same filesystem)
     await rename(tmpFile, STATE_FILE);
   } catch (err) {
     console.error(`[village] Failed to save state: ${err.message}`);
+  } finally {
+    _saveInProgress = false;
+    if (_savePending) { _savePending = false; saveState(); }
   }
 }
 
@@ -162,6 +184,7 @@ function removeBot(botName, reason) {
   const displayName = participants.get(botName)?.displayName || botName;
   participants.delete(botName);
   failureCounts.delete(botName);
+  if (state.remoteParticipants?.[botName]) delete state.remoteParticipants[botName];
   gameAdapter.removeBot(state, botName, displayName, broadcastEvent);
   console.log(`[village] ${botName} removed (${reason})`);
 }
@@ -224,18 +247,16 @@ function broadcastEvent(event) {
     }
   }
 
-  // Persist to JSONL log file
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    if (today !== logDate) {
-      logDate = today;
-      logFile = join(LOGS_DIR, `${today}.jsonl`);
-    }
-    const line = JSON.stringify({ ...event, _ts: new Date().toISOString() }) + '\n';
-    appendFileSync(logFile, line);
-  } catch (err) {
-    console.error(`[village] Failed to write event log: ${err.message}`);
+  // Buffer to JSONL log file (flushed async every 100ms)
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== logDate) {
+    // Day rolled over — flush any buffered lines for the old file first
+    if (_logBuffer.length) _flushLogBuffer();
+    logDate = today;
+    logFile = join(LOGS_DIR, `${today}.jsonl`);
   }
+  _logBuffer.push(JSON.stringify({ ...event, _ts: new Date().toISOString() }) + '\n');
+  if (!_logFlushTimer) _logFlushTimer = setTimeout(_flushLogBuffer, 100);
 }
 
 // --- Advance clock ---
@@ -398,9 +419,8 @@ const server = createServer(async (req, res) => {
     // Idempotent — 200 even if bot not present
     if (participants.has(botName)) {
       removeBot(botName, 'leave request');
-    }
-    // Remove from remoteParticipants on explicit leave (not on timeout)
-    if (state.remoteParticipants?.[botName]) {
+    } else if (state.remoteParticipants?.[botName]) {
+      // Bot not in participants but still in persisted state — clean up
       delete state.remoteParticipants[botName];
     }
     await saveState();
@@ -703,6 +723,9 @@ function shutdown(signal) {
       setTimeout(waitForTick, 500);
       return;
     }
+
+    // Flush any buffered log lines before saving state
+    flushLogBufferSync();
 
     // Save state
     saveState().then(() => {

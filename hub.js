@@ -94,6 +94,14 @@ const { villageRouter, hubRouter } = createOperatorRouters(routeDeps);
 app.use('/api/village', villageRouter);
 app.use('/api/hub',     hubRouter);
 
+// --- Prune stale botHealth entries (bots not seen in >1h) ---
+setInterval(() => {
+  const cutoff = Date.now() - 60 * 60_000;
+  for (const [name, h] of botHealth) {
+    if (h.receivedAt < cutoff) botHealth.delete(name);
+  }
+}, 15 * 60_000);
+
 // --- Start ---
 async function main() {
   if (!VILLAGE_SECRET) {
