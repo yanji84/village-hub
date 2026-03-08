@@ -372,7 +372,7 @@ async function fetchHubStatus() {
     const r = await fetch(basePath + '/api/dev/hub-status');
     const d = await r.json();
     hubStatus = d.bots || {};
-    hubSummary = { pendingScenes: d.pendingScenes || 0, pollWaiters: d.pollWaiters || 0, sceneQueue: d.sceneQueue || 0 };
+    hubSummary = { pendingScenes: d.pendingScenes || 0, pollWaiters: d.pollWaiters || 0, uptimeMs: d.uptimeMs || 0 };
     renderSidebar();
     updateDetail();
   } catch {}
@@ -502,19 +502,12 @@ function renderWorldState() {
     for (const [n,info] of exiles) html += `<div class="world-kv"><span class="k">${esc(n)}</span><span>until tick ${info.until||'?'}</span></div>`;
     html += '</div>';
   }
-  // Events (notable events + recent public logs merged)
-  const allEvents = [];
-  for (const n of notableEvents.slice(0, 20)) {
-    allEvents.push({ html: `<span style="color:var(--text-dim);font-size:10px">#${n.tick||'?'}</span> ${n.text}` });
-  }
-  for (const [loc, logs] of Object.entries(e.publicLogs||{})) {
-    for (const log of (logs||[]).slice(-5)) {
-      allEvents.push({ html: `<span class="wl-bot">${esc(log.displayName||log.bot)}</span> @${esc(loc)}: ${esc((log.message||'').slice(0,80))}` });
-    }
-  }
-  if (allEvents.length) {
+  // Notable events (governance, news, join/leave — captured live via SSE)
+  if (notableEvents.length) {
     html += '<div class="world-section"><h4>Events</h4>';
-    for (const ev of allEvents) html += `<div class="world-log-entry">${ev.html}</div>`;
+    for (const n of notableEvents.slice(0, 20)) {
+      html += `<div class="world-log-entry"><span style="color:var(--text-dim);font-size:10px">#${n.tick||'?'}</span> ${n.text}</div>`;
+    }
     html += '</div>';
   }
   // Server meta
@@ -536,14 +529,6 @@ function renderWorldState() {
     }
     html += '</div>';
   }
-  // Notable events
-  if (notableEvents.length) {
-    html += '<div class="world-section"><h4>Notable Events</h4>';
-    for (const n of notableEvents.slice(0, 15)) {
-      html += `<div class="world-log-entry" style="color:${n.cls==='gov'?'var(--yellow)':n.cls==='news'?'var(--green)':'var(--text-dim)'}">${n.time} ${n.text}</div>`;
-    }
-    html += '</div>';
-  }
   return html;
 }
 
@@ -554,7 +539,6 @@ function renderArchView() {
   const phase = e.phase || '--';
 
   // Server box
-  const serverAddr = '127.0.0.1:7001';
   let serverUp = '--';
   if (serverMeta?.uptime) serverUp = fmtUp(serverMeta.uptime * 1000);
 
@@ -569,12 +553,18 @@ function renderArchView() {
   }
   const connCls = tickInProgress ? (anyDone ? 'active respond' : 'active') : '';
 
+  // Count real bots (exclude NPCs)
+  const realBots = [];
+  for (const [, list] of Object.entries(e.locations || {})) {
+    for (const b of list) if (!b.name.startsWith('npc-')) realBots.push(b);
+  }
+
   let html = '<div class="arch-view">';
 
   // Game Server box
   html += `<div class="arch-box">
     <div class="arch-label">Game Server</div>
-    <div class="arch-sub">${serverAddr} · tick #${tick} · ${esc(phase)}<br>uptime: ${serverUp}</div>
+    <div class="arch-sub">tick #${tick} · ${esc(phase)}<br>uptime: ${serverUp}</div>
   </div>`;
 
   // Connector: server ↔ hub
@@ -584,14 +574,11 @@ function renderArchView() {
   }
 
   // Hub box
-  const hubAddr = '0.0.0.0:8080';
-  const botCount = serverMeta?.participants || Object.keys(hubStatus).length || '?';
-  const obsCount = serverMeta?.observers || '?';
+  const hubUp = hubSummary.uptimeMs ? fmtUp(hubSummary.uptimeMs) : '--';
   const hs = hubSummary;
-  const hubLine2 = `relay: ${hs.pendingScenes} pending · poll: ${hs.pollWaiters} · queue: ${hs.sceneQueue}`;
   html += `<div class="arch-box">
     <div class="arch-label">Hub</div>
-    <div class="arch-sub">${hubAddr} · ${botCount} bots · ${obsCount} observers<br>${hubLine2}</div>
+    <div class="arch-sub">${realBots.length} bots · relay: ${hs.pendingScenes} pending · poll: ${hs.pollWaiters}<br>uptime: ${hubUp}</div>
   </div>`;
 
   // Connector: hub ↔ bots
@@ -735,8 +722,12 @@ function renderTickLog() {
     }
 
     for (const bot of (tick.bots || [])) {
-      const stCls = bot.deliveryStatus === 'ok' ? 'status-ok' : bot.deliveryStatus === 'timeout' ? 'status-timeout' : 'status-error';
-      const stTxt = bot.deliveryStatus === 'ok' ? `✓ ${(bot.deliveryMs/1000).toFixed(1)}s` : `✗ ${bot.deliveryStatus}`;
+      const isErr = bot.deliveryStatus !== 'ok';
+      const stCls = !isErr ? 'status-ok' : bot.deliveryStatus === 'timeout' ? 'status-timeout' : 'status-error';
+      let stTxt = !isErr ? `✓ ${(bot.deliveryMs/1000).toFixed(1)}s` : `✗ ${bot.deliveryStatus}`;
+      if (isErr && bot.error?.message) stTxt += ` — ${esc(bot.error.message)}`;
+      if (isErr && bot.error?.httpStatus) stTxt += ` (${bot.error.httpStatus})`;
+      if (isErr) stTxt += ` ${(bot.deliveryMs/1000).toFixed(1)}s`;
       let actHtml = '';
       if (bot.actions?.length > 0) {
         for (const a of bot.actions) {
@@ -744,7 +735,7 @@ function renderTickLog() {
           if (a.message) actHtml += `<span class="action-msg">${esc((a.message||'').slice(0,80))}${a.message.length>80?'…':''}</span> `;
           if (a.target) actHtml += `<span class="action-msg">→${esc(a.target)}</span> `;
         }
-      } else if (bot.deliveryStatus === 'ok') {
+      } else if (!isErr) {
         actHtml = '<span style="color:var(--text-dim)">no actions</span>';
       }
       const flags = (bot.hasAgenda?'🎯':'')+(bot.hasMemoryEntry?'📝':'');
@@ -880,6 +871,7 @@ function updateDetail() {
   if (lastDetail) {
     html += `<div class="detail-section"><h3>Last Tick #${lastTick.tick}</h3>
       <div class="detail-kv"><span class="k">delivery</span><span class="v">${lastDetail.deliveryStatus==='ok'?'✓ '+(lastDetail.deliveryMs/1000).toFixed(1)+'s':'✗ '+lastDetail.deliveryStatus}</span></div>
+      ${lastDetail.error ? `<div class="detail-kv"><span class="k">error</span><span class="v" style="color:var(--red)">${esc(lastDetail.error.message||lastDetail.error.type||'')}${lastDetail.error.httpStatus?' ('+lastDetail.error.httpStatus+')':''}</span></div>` : ''}
       <div class="detail-kv"><span class="k">payload</span><span class="v">${(lastDetail.payloadSize/1024).toFixed(1)}KB · ${lastDetail.toolCount} tools</span></div>
       <div class="detail-kv"><span class="k">actions</span><span class="v">${lastDetail.actions?.length||0}</span></div>
       <div class="detail-kv"><span class="k">memory entry</span><span class="v">${lastDetail.hasMemoryEntry?'yes':'--'}</span></div>
@@ -898,13 +890,14 @@ function updateDetail() {
 
   const hist = tickHistory.slice(0,15).map(t => {
     const d = t.bots?.find(b => b.name === name);
-    return d ? { tick: t.tick, s: d.deliveryStatus, ms: d.deliveryMs, n: d.actions?.length||0 } : null;
+    return d ? { tick: t.tick, s: d.deliveryStatus, ms: d.deliveryMs, n: d.actions?.length||0, err: d.error } : null;
   }).filter(Boolean);
   if (hist.length) {
     html += '<div class="detail-section"><h3>Delivery History</h3>';
     for (const h of hist) {
       const c = h.s==='ok'?'status-ok':h.s==='timeout'?'status-timeout':'status-error';
-      html += `<div class="detail-kv"><span class="k">#${h.tick}</span><span class="v ${c}">${h.s==='ok'?(h.ms/1000).toFixed(1)+'s':h.s} · ${h.n} act</span></div>`;
+      const errTxt = h.err?.message ? ` — ${esc(h.err.message)}` : '';
+      html += `<div class="detail-kv"><span class="k">#${h.tick}</span><span class="v ${c}">${h.s==='ok'?(h.ms/1000).toFixed(1)+'s':h.s}${errTxt} · ${h.n} act</span></div>`;
     }
     html += '</div>';
   }

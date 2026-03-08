@@ -303,12 +303,17 @@ export async function socialTick(ctx) {
       const t0 = Date.now();
       const response = await sendSceneRemote(botName, conversationId, payload);
       detail.deliveryMs = Date.now() - t0;
-      if (!response || !response.actions) {
-        detail.deliveryStatus = detail.deliveryMs >= 55000 ? 'timeout' : 'error';
-        detail.error = detail.deliveryStatus;
+      if (!response || response._error || !response.actions) {
+        if (response?._error) {
+          detail.deliveryStatus = response._error.type || 'error';
+          detail.error = response._error;
+        } else {
+          detail.deliveryStatus = detail.deliveryMs >= 55000 ? 'timeout' : 'error';
+          detail.error = { type: detail.deliveryStatus, message: detail.deliveryStatus };
+        }
       }
       botDetails.push(detail);
-      return { botName, response, loc, detail };
+      return { botName, response: response?._error ? null : response, loc, detail };
     })
   );
 

@@ -213,17 +213,21 @@ async function sendSceneRemote(botName, conversationId, payload) {
     });
 
     if (!resp.ok) {
-      console.error(`[village] ${botName} (remote) HTTP ${resp.status}`);
+      let message = `HTTP ${resp.status}`;
+      try { const b = await resp.json(); if (b.error) message = b.error; } catch {}
+      console.error(`[village] ${botName} (remote) ${message}`);
       trackFailure(botName);
-      return null;
+      return { _error: { type: 'http', httpStatus: resp.status, message } };
     }
 
     failureCounts.delete(botName);
     return await resp.json();
   } catch (err) {
-    console.error(`[village] ${botName} (remote) ${err.name === 'TimeoutError' ? 'timeout (60s)' : err.message} — skipped`);
+    const isTimeout = err.name === 'TimeoutError' || err.name === 'AbortError';
+    const message = isTimeout ? `timeout (${Math.round(REMOTE_SCENE_TIMEOUT_MS/1000)}s)` : err.message;
+    console.error(`[village] ${botName} (remote) ${message} — skipped`);
     trackFailure(botName);
-    return null;
+    return { _error: { type: isTimeout ? 'timeout' : 'network', message } };
   }
 }
 
