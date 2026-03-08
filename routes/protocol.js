@@ -39,9 +39,11 @@ export function createProtocolRouter({ transport, tokenManager, botHealth, confi
   });
 
   // --- GET /poll/:botName — bot long-polls for next scene ---
+  // Returns 410 (not 401) for missing/revoked tokens so the plugin can
+  // distinguish "kicked" (clean exit) from transient auth errors.
   router.get('/poll/:botName', limiter, async (req, res) => {
     const auth = await validateToken(req, tokenManager);
-    if (!auth) return res.status(401).json({ error: 'Unauthorized' });
+    if (!auth) return res.status(410).json({ error: 'Token revoked or not found' });
 
     const { botName } = req.params;
     if (auth.botName !== botName) return res.status(403).json({ error: 'Token does not match bot name' });

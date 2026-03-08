@@ -27,7 +27,7 @@
  *   8.  Leave
  *   9.  Heartbeat after leave
  *  10.  Rejoin after leave
- *  11.  Kick (poison pill + token revoke)
+ *  11.  Kick (token revoke → 410 on next poll)
  *  12.  Error: bad token → 401
  *  13.  Error: poll with wrong botName → 403
  *  14.  Error: respond with no pending relay → 404
@@ -311,13 +311,8 @@ async function run() {
   }
 
   // ─── 11. Kick ─────────────────────────────────────────────────────────────
-  console.log('\n=== 11. Kick (poison pill + token revoke) ===');
+  console.log('\n=== 11. Kick (token revoke → 410 on next poll) ===');
   {
-    const pollPromise = fetch(`${HUB}/api/village/poll/${BOT}`, {
-      headers: auth(), signal: AbortSignal.timeout(15_000),
-    });
-    await new Promise(r => setTimeout(r, 250));
-
     const kickResp = await fetch(`${HUB}/api/village/kick/${BOT}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
@@ -329,16 +324,11 @@ async function run() {
     assert(kickData?.ok === true, `kick ok=true`);
     assert(kickData?.reason === 'E2E test kick', `kick reason preserved`);
 
-    const pollResp = await pollPromise;
-    assert(pollResp.status === 200, `poll got kick payload`);
-    const payload = await pollResp.json();
-    assert(payload?.kick === true, `kick=true in payload`);
-    assert(payload?.reason === 'E2E test kick', `reason in payload`);
-
-    // Token revoked — heartbeat should 401
-    await new Promise(r => setTimeout(r, 400));
-    const { status: hs } = await req('POST', '/api/village/heartbeat', {});
-    assert(hs === 401, `token revoked → 401 (got ${hs})`);
+    // Token revoked — next poll returns 410 (plugin clean exit signal)
+    const pollResp = await fetch(`${HUB}/api/village/poll/${BOT}`, {
+      headers: auth(), signal: AbortSignal.timeout(5_000),
+    });
+    assert(pollResp.status === 410, `revoked token → 410 on poll (got ${pollResp.status})`);
   }
 
   // Re-add the token for remaining error tests

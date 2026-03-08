@@ -218,27 +218,6 @@ describe('respond — error cases', () => {
   });
 });
 
-// ─── inject ───────────────────────────────────────────────────────────────────
-
-describe('inject', () => {
-  it('inject while polling delivers immediately', async () => {
-    const t = new RelayTransport();
-    const { promise } = t.poll('iris', 5000);
-    await new Promise(r => setTimeout(r, 10));
-    t.inject('iris', { kick: true, reason: 'test' });
-    const result = await promise;
-    expect(result).toEqual({ kick: true, reason: 'test' });
-  });
-
-  it('inject while not polling queues for next poll', async () => {
-    const t = new RelayTransport();
-    t.inject('iris', { kick: true, reason: 'offline-kick' });
-    const { promise } = t.poll('iris', 2000);
-    const result = await promise;
-    expect(result).toEqual({ kick: true, reason: 'offline-kick' });
-  });
-});
-
 // ─── multiple bots ────────────────────────────────────────────────────────────
 
 describe('multiple bots', () => {

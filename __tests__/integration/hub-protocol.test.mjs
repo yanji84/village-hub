@@ -551,56 +551,37 @@ describe('duplicate poll handling', () => {
 // ─── Kick ─────────────────────────────────────────────────────────────────────
 
 describe('kick', () => {
-  it('delivers poison pill to polling bot and revokes token', async () => {
+  it('kick revokes token; subsequent poll returns 410 (clean bot exit)', async () => {
     const { data: newTok } = await operatorReq('POST', '/api/hub/tokens', { botName: 'kick-target', displayName: 'Kick Target' });
     const kickToken = newTok.token;
 
-    // Start polling
-    const pollPromise = fetch(`${HUB}/api/village/poll/kick-target`, {
-      headers: { 'Authorization': `Bearer ${kickToken}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    await new Promise(r => setTimeout(r, 200));
-
-    // Kick
+    // Kick (revokes token + notifies game server)
     const { status: kickStatus, data: kickData } = await operatorReq(
       'POST', '/api/village/kick/kick-target', { reason: 'test kick' });
     expect(kickStatus).toBe(200);
     expect(kickData.ok).toBe(true);
 
-    // Poll receives kick payload
-    const pollResp = await pollPromise;
-    expect(pollResp.status).toBe(200);
-    const payload = await pollResp.json();
-    expect(payload.kick).toBe(true);
-    expect(payload.reason).toBe('test kick');
-
-    // Token revoked — subsequent request → 401
-    await new Promise(r => setTimeout(r, 300));
-    const resp = await fetch(`${HUB}/api/village/heartbeat`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${kickToken}`, 'Content-Type': 'application/json' },
-      body: '{}',
+    // Subsequent poll returns 410 — plugin treats this as clean exit ("removed")
+    const pollResp = await fetch(`${HUB}/api/village/poll/kick-target`, {
+      headers: { 'Authorization': `Bearer ${kickToken}` },
       signal: AbortSignal.timeout(5_000),
     });
-    expect(resp.status).toBe(401);
+    expect(pollResp.status).toBe(410);
   });
 
-  it('queues kick payload when bot is not polling', async () => {
+  it('kick with bot not polling: revoked token means next poll returns 410', async () => {
     const { data: newTok } = await operatorReq('POST', '/api/hub/tokens', { botName: 'kick-offline', displayName: 'Kick Offline' });
     const kickToken = newTok.token;
 
     // Kick before bot polls
     await operatorReq('POST', '/api/village/kick/kick-offline', { reason: 'offline kick' });
 
-    // Bot polls now → gets queued kick payload
+    // Bot polls after kick → 410 (token already revoked)
     const pollResp = await fetch(`${HUB}/api/village/poll/kick-offline`, {
       headers: { 'Authorization': `Bearer ${kickToken}` },
       signal: AbortSignal.timeout(5_000),
     });
-    // Token was revoked so poll returns 401 (token check happens before queue delivery)
-    expect([200, 401]).toContain(pollResp.status);
+    expect(pollResp.status).toBe(410);
   });
 });
 

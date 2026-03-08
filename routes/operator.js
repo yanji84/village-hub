@@ -6,7 +6,6 @@
  *   hubRouter     → mount at /api/hub      (tokens CRUD, hub health)
  *
  * Dependencies injected by hub.js:
- *   transport        — RelayTransport instance (for kick inject)
  *   tokenManager     — lib/token-manager.js
  *   processManager   — ProcessManager instance (for hub health running status)
  *   config           — { VILLAGE_SECRET, VILLAGE_HUB_URL, GAME_URL }
@@ -16,7 +15,7 @@
 import { Router } from 'express';
 import { safeEqual, requireSecret } from '../lib/auth.js';
 
-export function createOperatorRouters({ transport, tokenManager, processManager, config, limiter }) {
+export function createOperatorRouters({ tokenManager, processManager, config, limiter }) {
   const { VILLAGE_SECRET, VILLAGE_HUB_URL, GAME_URL } = config;
   const authMiddleware = requireSecret(VILLAGE_SECRET);
 
@@ -24,12 +23,11 @@ export function createOperatorRouters({ transport, tokenManager, processManager,
 
   const villageRouter = Router();
 
-  // POST /kick/:botName — poison pill + game server leave + token revoke
+  // POST /kick/:botName — game server leave + token revoke
+  // Token revocation means the bot's next poll returns 410 → clean exit.
   villageRouter.post('/kick/:botName', authMiddleware, async (req, res) => {
     const { botName } = req.params;
     const reason = req.body?.reason || 'Kicked by server';
-
-    transport.inject(botName, { kick: true, reason });
 
     try {
       const headers = { 'Content-Type': 'application/json' };
