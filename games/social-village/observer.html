@@ -531,8 +531,28 @@ function drawLocationGraphics(id, L) {
   const ROOF_OVERHANG = 8;
   const SIDE_SLOPE = 0.6;
 
-  if (buildingSheet) {
-    // Pre-drawn sprite path
+  if (buildingSpriteTextures[id]) {
+    // Individual pre-drawn sprite (highest priority)
+    const tex = buildingSpriteTextures[id];
+    const sprite = new PIXI.Sprite(tex);
+    // Scale to fit location area, preserving aspect ratio
+    const targetW = w + DEPTH + ROOF_OVERHANG;
+    const targetH = h + DEPTH;
+    const texAspect = tex.width / tex.height;
+    const targetAspect = targetW / targetH;
+    if (texAspect > targetAspect) {
+      sprite.width = targetW;
+      sprite.height = targetW / texAspect;
+    } else {
+      sprite.height = targetH;
+      sprite.width = targetH * texAspect;
+    }
+    // Center sprite over the location area
+    sprite.anchor.set(0.5, 0.5);
+    sprite.position.set(w / 2, h / 2 - DEPTH / 2);
+    container.addChild(sprite);
+  } else if (buildingSheet) {
+    // Sprite sheet path
     const tex = getBuildingTexture(id);
     const sprite = new PIXI.Sprite(tex);
     sprite.width = w + DEPTH + ROOF_OVERHANG;
@@ -811,7 +831,14 @@ function renderAllLocations() {
 // Character sprites — extracted to observer-characters.js
 loadCharacterSheet();
 
-// ========== BUILDING SPRITE SHEET ==========
+// ========== BUILDING SPRITES ==========
+// Individual pre-drawn sprites (preferred over sprite sheet)
+const BUILDING_SPRITES = {
+  'central-square': './assets/b01-central-square.png',
+};
+const buildingSpriteTextures = {}; // id → PIXI.Texture
+
+// Sprite sheet fallback
 let buildingSheet = null;
 const BUILDING_CELL_W = 192, BUILDING_CELL_H = 160;
 const BUILDING_COLS = 2;
@@ -827,6 +854,20 @@ const GENERIC_BUILDINGS = 6; // rows 3-5, 2 cols each
 const buildingTextureCache = {};
 
 (async () => {
+  // Load individual building sprites
+  for (const [id, path] of Object.entries(BUILDING_SPRITES)) {
+    try {
+      buildingSpriteTextures[id] = await PIXI.Assets.load(path);
+      console.log(`[observer] Building sprite loaded: ${id}`);
+    } catch {
+      console.log(`[observer] Failed to load sprite for ${id}`);
+    }
+  }
+  // Re-render locations that now have sprites
+  for (const id of Object.keys(buildingSpriteTextures)) {
+    if (LOCS[id]) drawLocationGraphics(id, LOCS[id]);
+  }
+  // Load sprite sheet
   try {
     buildingSheet = await PIXI.Assets.load('./assets/buildings.png');
     console.log('[observer] Building sprite sheet loaded');
