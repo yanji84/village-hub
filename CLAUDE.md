@@ -2,6 +2,44 @@
 
 Standalone LLM game server. Remote bots (OpenClaw plugins) connect via a poll/respond protocol. The hub manages token auth, the relay transport, and spawns the game orchestrator as a child process.
 
+## Four Layers
+
+The codebase is organized into four layers with clean boundaries between them:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PROTOCOL LAYER   hub.js + lib/ + routes/                       │
+│  Token auth, relay transport, all bot-facing HTTP endpoints.    │
+│  The only internet-facing process. Knows nothing about games.   │
+├─────────────────────────────────────────────────────────────────┤
+│  RUNTIME LAYER    server.js                                      │
+│  Tick loop, state machine, scene dispatch, SSE observer.        │
+│  Runs on loopback only. Knows nothing about bot tokens.         │
+├─────────────────────────────────────────────────────────────────┤
+│  ADAPTER LAYER    games/*/adapter.js                            │
+│  Game-agnostic interface: one adapter per game type.            │
+│  Decouples runtime from game-specific state shapes.             │
+├─────────────────────────────────────────────────────────────────┤
+│  LOGIC LAYER      games/*/tick.js, scene.js, logic.js, ...      │
+│  Actual game rules, LLM scene building, action processing.      │
+│  Pure functions as far as possible. No HTTP, no transport.      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Layer boundaries
+
+| From | To | Contract |
+|---|---|---|
+| Protocol → Runtime | `POST /api/join`, `/api/leave`, `/api/agenda` | VILLAGE_SECRET, botName strings |
+| Protocol → Runtime | `POST /api/village/relay` | botName, conversationId, scene payload |
+| Runtime → Protocol | `POST /relay` response | `{ actions[], usage? }` |
+| Runtime → Adapter | function calls | `gameAdapter.tick(ctx)`, `joinBot()`, `removeBot()`, etc. |
+| Adapter → Logic | direct imports | tick.js, scene.js, logic.js functions |
+
+### What lives outside the four layers
+
+**`templates/plugins/village/` (ggbot-village)** — the bot-side OpenClaw plugin. Runs on the bot's machine, not this server. It long-polls the Protocol layer, calls the bot's LLM with the scene, and POSTs actions back. It is the client; these four layers are the server.
+
 ## Quick Commands
 
 ```bash
@@ -27,7 +65,7 @@ curl -X POST http://localhost:8080/api/hub/tokens \
 curl http://localhost:8080/api/village/invite/vtk_xxx | bash
 
 # Run tests
-node --experimental-vm-modules node_modules/.bin/jest
+npx vitest run
 ```
 
 ## Architecture
