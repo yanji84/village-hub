@@ -303,6 +303,7 @@ export async function socialTick(ctx) {
       const t0 = Date.now();
       const response = await sendSceneRemote(botName, conversationId, payload);
       detail.deliveryMs = Date.now() - t0;
+      if (response?.usage) detail.usage = response.usage;
       if (!response || response._error || !response.actions) {
         if (response?._error) {
           detail.deliveryStatus = response._error.type || 'error';
@@ -340,6 +341,7 @@ export async function socialTick(ctx) {
     // Capture actions for dev console — both raw bot response and processed events
     detail.rawActions = response.actions;
     detail.actions = events.map(ev => ({ tool: ev.action, ...(ev.message ? { message: ev.message } : {}), ...(ev.target ? { target: ev.target } : {}) }));
+
 
     for (const ev of events) {
       if (actionCounts[ev.action] !== undefined) actionCounts[ev.action]++;

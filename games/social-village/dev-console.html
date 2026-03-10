@@ -458,7 +458,7 @@ function renderBotRoster() {
     else if (ld?.deliveryStatus === 'error') dot = 'dot-yellow';
     const sel = selectedBot === name ? ' selected' : '';
     const ag = latestTickEvent.agendas?.[name]?.goal ? ' 🎯' : '';
-    const hbNext = hbCountdown(hubStatus[name]);
+    const hbNext = hbCountdown(hubStatus[name], healthData[name]);
     const hbStr = hbNext != null ? ` · hb ${hbNext}s` : '';
     html += `<div class="bot-card${sel}" onclick="selectBot('${name}')">
       <div class="name"><span class="dot ${dot}"></span>${esc(info.displayName)}${ag}</div>
@@ -540,10 +540,11 @@ function renderWorldState() {
   return html;
 }
 
-function hbCountdown(hub) {
+function hbCountdown(hub, health) {
   if (!hub || hub.lastHeartbeat == null) return null;
+  const intervalS = Math.round((hub.heartbeatIntervalMs || health?.heartbeatIntervalMs || 300_000) / 1000);
   const elapsed = hub.lastHeartbeat + (Date.now() - hubStatusFetchedAt);
-  const next = Math.max(0, 300 - Math.round(elapsed / 1000));
+  const next = Math.max(0, intervalS - Math.round(elapsed / 1000));
   return next;
 }
 
@@ -624,7 +625,7 @@ function renderArchView() {
         if (hub?.polling) { dotCls = 'ad-green-dim'; label = 'polling'; }
         else { label = 'idle'; }
       }
-      const hbNext = hbCountdown(hubStatus[name]);
+      const hbNext = hbCountdown(hubStatus[name], healthData[name]);
       const hbInfo = hbNext != null ? `hb ${hbNext}s` : '';
       html += `<div class="arch-bot-row"><span class="arch-bot-name">${esc(display)}</span><span class="arch-status">${label}${hbInfo ? ' · ' + hbInfo : ''}</span><span class="arch-dot ${dotCls}"></span></div>`;
     }
@@ -639,7 +640,7 @@ function renderArchView() {
     html += '<div class="arch-bot-list">';
     for (const name of connected.sort()) {
       const hub = hubStatus[name];
-      const hbNext = hbCountdown(hub);
+      const hbNext = hbCountdown(hub, healthData[name]);
       const nextHb = hbNext != null ? hbNext + 's' : '?';
       const ver = hub?.version ? `v${hub.version}` : '';
       const up = hub?.uptimeMs ? fmtUp(hub.uptimeMs) : '';
@@ -659,6 +660,7 @@ function renderArchView() {
 // ---- Tick Log ----
 let expandedPayloads = new Set();
 let expandedActions = new Set();
+let expandedPrompts = new Set();
 
 function togglePayload(key) {
   if (expandedPayloads.has(key)) expandedPayloads.delete(key);
@@ -669,6 +671,12 @@ function togglePayload(key) {
 function toggleActions(key) {
   if (expandedActions.has(key)) expandedActions.delete(key);
   else expandedActions.add(key);
+  renderTickLog();
+}
+
+function togglePrompt(key) {
+  if (expandedPrompts.has(key)) expandedPrompts.delete(key);
+  else expandedPrompts.add(key);
   renderTickLog();
 }
 
@@ -777,30 +785,61 @@ function renderTickLog() {
         actHtml = '<span style="color:var(--text-dim)">no actions</span>';
       }
       const flags = (bot.hasAgenda?'🎯':'')+(bot.hasMemoryEntry?'📝':'');
+      const u = bot.usage;
+      const tokenStr = u ? `${u.input||0}→${u.output||0}` : '';
+      const cacheStr = u && (u.cacheRead || u.cacheWrite)
+        ? ` cr=${u.cacheRead||0} cw=${u.cacheWrite||0}` : '';
+      const costStr = u?.cost?.total ? ` $${u.cost.total.toFixed(3)}` : '';
       const meta = `${(bot.payloadSize/1024).toFixed(1)}KB`;
       const pk = `${tick.tick}:${bot.name}`;
       const isPayloadOpen = expandedPayloads.has(pk);
       const isActionsOpen = expandedActions.has(pk);
+      const isPromptOpen = expandedPrompts.has(pk);
 
       html += `<div class="bot-row">
         <div class="bot-row-summary" onclick="selectBot('${bot.name}')">
           <div class="br-name">${esc(bot.displayName||bot.name)} <span style="color:var(--text-dim);font-weight:400;font-size:10px">${flags}</span></div>
-          <div class="br-status ${stCls}">${stTxt} <span style="color:var(--text-dim);font-size:10px">${meta}</span></div>
+          <div class="br-status ${stCls}">${stTxt} <span style="color:var(--text-dim);font-size:10px">${meta}${tokenStr ? ' · '+tokenStr+' tok'+cacheStr : ''}${costStr}</span></div>
           <div class="br-actions">${actHtml}</div>
         </div>`;
       if (bot.rawActions?.length || bot.actions?.length) {
         html += `<div class="payload-toggle${isActionsOpen?' open':''}" onclick="event.stopPropagation();toggleActions('${pk}')">actions</div>`;
         html += `<div class="payload-box${isActionsOpen?' show':''}">${renderRawActions(bot.rawActions || bot.actions)}</div>`;
       }
+      if (bot.payload?.systemPrompt || bot.payload?.scene) {
+        const promptParts = [];
+        if (bot.payload.systemPrompt) promptParts.push('[SYSTEM]\n' + bot.payload.systemPrompt);
+        if (bot.payload.scene) promptParts.push('[SCENE]\n' + bot.payload.scene);
+        html += `<div class="payload-toggle${isPromptOpen?' open':''}" onclick="event.stopPropagation();togglePrompt('${pk}')">prompt</div>`;
+        html += `<div class="payload-box${isPromptOpen?' show':''}" data-pk="prompt:${pk}">${esc(promptParts.join('\n\n---\n\n'))}</div>`;
+      }
       if (bot.payload) {
         html += `<div class="payload-toggle${isPayloadOpen?' open':''}" onclick="event.stopPropagation();togglePayload('${pk}')">payload</div>`;
-        html += `<div class="payload-box${isPayloadOpen?' show':''}">${esc(JSON.stringify(bot.payload,null,2))}</div>`;
+        html += `<div class="payload-box${isPayloadOpen?' show':''}" data-pk="${pk}">${esc(JSON.stringify(bot.payload,null,2))}</div>`;
       }
       html += '</div>';
     }
     html += '</div></div>';
   }
+  // Save scroll positions before DOM replacement
+  const scrollTop = container.scrollTop;
+  const boxScrolls = {};
+  for (const key of expandedPayloads) {
+    const el = container.querySelector(`[data-pk="${key}"]`);
+    if (el) boxScrolls[key] = el.scrollTop;
+  }
+  for (const key of expandedPrompts) {
+    const pk = `prompt:${key}`;
+    const el = container.querySelector(`[data-pk="${pk}"]`);
+    if (el) boxScrolls[pk] = el.scrollTop;
+  }
   container.innerHTML = html;
+  container.scrollTop = scrollTop;
+  // Restore expanded payload box scroll positions
+  for (const [key, st] of Object.entries(boxScrolls)) {
+    const el = container.querySelector(`[data-pk="${key}"]`);
+    if (el) el.scrollTop = st;
+  }
 }
 
 function renderTransportLine(t) {

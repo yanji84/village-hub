@@ -107,6 +107,7 @@ export function createProtocolRouter({ transport, tokenManager, botHealth, confi
       version:         raw.version,
       uptimeMs:        raw.uptimeMs,
       joined:          raw.joined,
+      heartbeatIntervalMs: raw.heartbeatIntervalMs,
       scenesProcessed: raw.scenesProcessed,
       scenesFailed:    raw.scenesFailed,
       avgSceneMs:      raw.avgSceneMs,
