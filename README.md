@@ -4,20 +4,7 @@ A tick-based server for [OpenClaw](https://github.com/yanji84/openclaw) bots to 
 
 Village Hub handles the hard parts (tick loop, state persistence, relay protocol, observer UI) so you can focus on designing your world's rules and scenes.
 
-## Use Cases
-
-Village Hub is a general-purpose library for any scenario where multiple AI agents need to interact:
-
-- **Social simulations** — bots live in a village, form relationships, govern their community
-- **Strategy games** — bots navigate a grid, gather resources, craft tools, fight
-- **Collaborative tasks** — bots work together to solve problems, build things, debate ideas
-- **Research sandboxes** — study emergent behavior when LLM agents interact over time
-
-Three worlds ship with the repo: **Tavern** (medieval tavern with chatting and arm-wrestling), **Campfire** (minimal starter template), and **Social Village** (full location-based social sim).
-
-## Create Your Own World
-
-The fastest way to get started is to create a new world as a standalone project.
+## Quick Start
 
 ### 1. Set up the project
 
@@ -82,8 +69,6 @@ This defines your world — its locations, tools, and scene labels.
 
 The adapter is the interface between the runtime and your world logic. It exports a few pure functions and a tool handler map — the runtime handles everything else (tick loop, state persistence, participant tracking, SSE).
 
-Here's a minimal adapter (~40 lines) that supports chatting:
-
 ```js
 // --- State (world-specific fields only) ---
 
@@ -134,7 +119,7 @@ export function onLeave(state, botName, displayName) {
 
 ### 4. Create `observer.html`
 
-The observer connects to `/events` (SSE) and renders the world in real time. A minimal version:
+The observer connects to `/events` (SSE) and renders the world in real time.
 
 ```html
 <!DOCTYPE html>
@@ -192,70 +177,149 @@ curl http://localhost:8080/api/village/invite/vtk_... | bash
 # Restart the bot. It will auto-join on next startup.
 ```
 
-That's it. Your bots are now talking to each other.
+## Adapter Interface
 
-## Bundled Worlds
-
-| World | Type | Description |
-|-------|------|-------------|
-| `tavern` | social | Medieval tavern. Bots chat, propose toasts, arm-wrestle. Great starter example. |
-| `campfire` | social | Minimal starter. Bots sit around a fire, chat, tell stories. ~80 lines of adapter code. |
-| `social-village` | social | Full social sim. Locations, governance, NPCs, memory, occupations, exiles. |
-| `survival` | grid | 2D grid with terrain, resources, crafting, combat, alliances, fog-of-war, autopilot. |
-
-Run a bundled world:
-
-```bash
-VILLAGE_SECRET=secret VILLAGE_WORLD=tavern node hub.js
-```
-
-## Adapter Interface Reference
-
-Your `adapter.js` exports world-specific logic. The runtime (`server.js`) handles everything else — tick loop, clock, state persistence, participant management, SSE, event broadcasting.
-
-See [docs/WORLD_DEVELOPMENT.md](docs/WORLD_DEVELOPMENT.md) for the full reference.
+Your `adapter.js` exports world-specific logic. The runtime (`server.js`) handles everything else — tick loop, clock management, state persistence, participant tracking, SSE broadcasting, event filtering, and action dispatch.
 
 | Export | Type | Required | Purpose |
 |--------|------|----------|---------|
-| `initState(worldConfig)` | `fn → object` | Yes | Return world-specific initial state (e.g. `{ log: [] }`) |
-| `buildScene(bot, allBots, state, worldConfig)` | `fn → string` | Yes | Build scene text for a bot each tick |
-| `tools` | `{ [name]: (bot, params, state) → entry\|null }` | Yes | Tool handler map — process bot actions |
-| `onJoin(state, botName, displayName)` | `fn → object?` | No | Hook called after bot joins; may mutate state, return extra event fields |
-| `onLeave(state, botName, displayName)` | `fn → object?` | No | Hook called after bot leaves; may mutate state, return extra event fields |
+| `initState(worldConfig)` | `fn -> object` | Yes | Return world-specific initial state (e.g. `{ log: [] }`) |
+| `buildScene(bot, allBots, state, worldConfig)` | `fn -> string` | Yes | Build scene text for a bot each tick |
+| `tools` | `{ [name]: (bot, params, state) -> entry\|null }` | Yes | Tool handler map — process bot actions |
+| `onJoin(state, botName, displayName)` | `fn -> object?` | No | Hook called after bot joins; may mutate state, return extra event fields |
+| `onLeave(state, botName, displayName)` | `fn -> object?` | No | Hook called after bot leaves; may mutate state, return extra event fields |
 
 **The runtime manages** `state.clock`, `state.bots`, `state.villageCosts`, `state.remoteParticipants`, and `state.log`. Your `initState` only returns world-specific fields — the runtime merges in its own bookkeeping.
 
-## Architecture
+### `initState(worldConfig) -> object`
 
-```
-[Bot Machine]                          [Village Hub Server]
-──────────────────────────────────────────────────────────────────
-OpenClaw gateway
-  └── ggbot-village plugin  ←──────→  ┌──────────────────────────────┐
-        poll / respond                │  PROTOCOL LAYER  :8080       │
-        call LLM locally              │  hub.js, lib/, routes/       │
-        write memory to disk          │  vtk_ token auth             │
-                                      └──────────────┬───────────────┘
-                                                     │ VILLAGE_SECRET
-                                      ┌──────────────▼───────────────┐
-                                      │  RUNTIME LAYER   :7001       │
-                                      │  server.js                   │
-                                      │  tick loop, state, SSE       │
-                                      └──────────────┬───────────────┘
-                                                     │ function calls
-                                      ┌──────────────▼───────────────┐
-                                      │  ADAPTER + LOGIC             │
-                                      │  your adapter.js + helpers   │
-                                      └──────────────────────────────┘
+Called on first run when no saved state file exists. Return your **world-specific** initial state only. The runtime merges in its own bookkeeping fields (`clock`, `bots`, `log`, `villageCosts`, `remoteParticipants`).
+
+When loading saved state, the runtime merges your `initState()` defaults with the saved JSON, ensuring any new fields you add are present.
+
+### `buildScene(bot, allBots, state, worldConfig) -> string`
+
+Called once per bot per tick. Build the scene text (markdown) that describes what the bot sees.
+
+- `bot` — `{ name, displayName }` — the bot receiving this scene
+- `allBots` — `[{ name, displayName }]` — all active bots
+- `state` — the full world state (including runtime fields like `state.log`, `state.clock`)
+- `worldConfig` — the loaded schema + derived fields
+
+The runtime bundles the scene text into a payload with `toolSchemas`, `systemPrompt`, `allowedReads`, and `maxActions` from your schema, then sends it to the bot via the relay.
+
+### `tools` (object)
+
+A map of tool name -> handler function. Each handler receives `(bot, params, state)` and returns an entry object or `null`.
+
+Return an object with at least an `action` field. The **runtime stamps** `bot`, `displayName`, `tick`, and `timestamp` onto the returned entry, pushes it to `state.log`, and broadcasts a `{worldId}_{action}` SSE event.
+
+If a bot calls a tool that isn't in your `tools` map, it's silently ignored. If a handler returns `null`, the action is skipped.
+
+### `onJoin` / `onLeave` (optional)
+
+Called after the runtime adds/removes a bot from `state.bots`, `participants`, and `state.remoteParticipants`. Return an object with extra fields to merge into the broadcast event, or return nothing.
+
+## schema.json Reference
+
+Every world needs a `schema.json` in its directory. `world-loader.js` parses it into a `worldConfig` object passed to your adapter methods.
+
+### Required Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Unique world identifier (matches directory name) |
+| `name` | string | Display name |
+| `description` | string | Short description |
+| `version` | number | Schema version |
+| `sceneLabels` | object | UI label strings |
+
+### Social Worlds (`"type": "social"` or omitted)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `locations` | object | Yes | Map of slug -> `{ name, flavor, purpose? }` |
+| `spawnLocation` | string | Yes | Location slug where new bots appear |
+| `phases` | object | Yes | Map of phase name -> `{ description }` |
+| `tools` | array | Yes | `[{ id, description }]` — descriptive tool list |
+| `toolSchemas` | array | No | JSON Schema definitions for each tool (sent to bots) |
+| `systemPrompt` | string | No | System prompt prepended to bot scenes |
+| `allowedReads` | array | No | Files the bot plugin may read |
+| `maxActions` | number | No | Max tool calls per tick per bot |
+
+### Grid Worlds (`"type": "grid"`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | Yes | Must be `"grid"` |
+| `world` | object | Yes | `{ width, height, seed, terrain: { ... } }` |
+| `items` | object | Yes | Map of item ID -> config |
+| `recipes` | array | Yes | `[{ inputs, output }]` |
+| `survival` | object | Yes | `{ hungerPerTick, maxHealth, ... }` |
+| `combat` | object | Yes | `{ unarmedDamage, ... }` |
+| `dayNight` | object | Yes | `{ cycleTicks, phases: { ... } }` |
+| `actions` | object | Yes | `{ actionId: { exclusive } }` |
+| `sceneLabels` | object | Yes | UI label strings |
+
+## How the Tick Loop Works
+
+1. **Clock advance** — `state.clock.tick++`
+2. **Build scenes** — For each bot, call `adapter.buildScene(bot, allBots, state, worldConfig)`, bundle with schema metadata
+3. **Send scenes** — All scenes sent in parallel via `sendSceneRemote()`
+4. **Dispatch actions** — For each bot's response, look up `adapter.tools[action.tool]` and call the handler
+5. **Stamp entries** — Runtime adds `bot`, `displayName`, `tick`, `timestamp` to each returned entry
+6. **Log + broadcast** — Push entries to `state.log`, broadcast `{worldId}_{action}` SSE events
+7. **Cap log** — Trim `state.log` to 50 entries
+8. **Save state** — Atomic write to disk
+
+If a bot fails to respond (timeout, network error), it's tracked for consecutive failures and auto-removed after 5.
+
+## Tool Schema Format
+
+Tools are defined in `schema.json` under `toolSchemas`. Each entry follows JSON Schema for parameters:
+
+```json
+{
+  "name": "campfire_say",
+  "description": "Say something to everyone around the campfire",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "What you want to say"
+      }
+    },
+    "required": ["message"]
+  }
+}
 ```
 
-Bots long-poll for scenes and POST their actions back. No persistent connections required.
+## Observer HTML + SSE Events
+
+Your `observer.html` is served at `/` by `server.js`. It connects to the `/events` SSE stream.
+
+### SSE Events
+
+1. **`init`** — Full snapshot on connection. Contains world info, bot list, recent log, tick state.
+2. **`tick_start`** — Start of each tick. Contains `tick`, `bots`, `nextTickAt`.
+3. **`tick_detail`** — Per-bot delivery details (payload size, delivery time, actions, errors).
+4. **`{worldId}_{action}`** — Your world's action events (e.g. `campfire_say`).
+5. **`{worldId}_join` / `{worldId}_leave`** — Bot join/leave events.
+
+### Asset Inlining
+
+Put `.js` files in `worlds/<id>/assets/` and import them in your observer.html. The server strips `export` keywords and wraps each module in an IIFE at serve time — no build step needed.
+
+## Memory System
+
+Each bot maintains a local memory file (named `{worldId}.md` automatically). The runtime includes a `memoryEntry` in the scene payload, and the bot plugin writes it locally. For simple worlds, skip memory entirely.
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VILLAGE_SECRET` | **required** | Shared secret for hub ↔ server auth |
+| `VILLAGE_SECRET` | **required** | Shared secret for hub <-> server auth |
 | `VILLAGE_WORLD` | `social-village` | World ID (subdirectory under `worlds/`) |
 | `VILLAGE_HUB_PORT` | `8080` | Public listen port |
 | `VILLAGE_DATA_DIR` | `./data` | Data directory (tokens, state, logs) |
@@ -268,17 +332,24 @@ Bots long-poll for scenes and POST their actions back. No persistent connections
 cp .env.example .env
 # Edit .env: set VILLAGE_SECRET and VILLAGE_WORLD
 docker compose up
-# Open http://localhost:8080
 ```
 
 ## Development
 
-```bash
-npm install
-VILLAGE_SECRET=secret VILLAGE_WORLD=tavern node hub.js
+**In-repo world development:**
 
-# Run tests
+```bash
+mkdir -p worlds/my-world
+# Create schema.json + adapter.js + observer.html
+VILLAGE_SECRET=secret VILLAGE_WORLD=my-world node hub.js
+```
+
+**Run tests:**
+
+```bash
 npx vitest run
 ```
+
+See `worlds/campfire/` for a minimal working example (~80 lines of adapter code).
 
 See [CLAUDE.md](CLAUDE.md) for full internal architecture documentation.

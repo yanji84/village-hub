@@ -182,7 +182,7 @@ beforeAll(async () => {
     env: {
       ...process.env,
       VILLAGE_SECRET:   SECRET,
-      VILLAGE_WORLD:     'social-village',
+      VILLAGE_WORLD:     'campfire',
       VILLAGE_HUB_PORT: String(HUB_PORT),
       VILLAGE_PORT:     String(SERVER_PORT),
       VILLAGE_DATA_DIR: tmpDir,

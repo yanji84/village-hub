@@ -22,7 +22,6 @@ import { appendFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadWorld } from './world-loader.js';
-import { readBotDailyCost as readBotDailyCostImpl } from './lib/cost-tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -50,7 +49,6 @@ const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || '120000',
 const MEMORY_FILENAME = `${worldId}.md`;
 const _dataDir = process.env.VILLAGE_DATA_DIR;
 const STATE_FILE = _dataDir ? join(_dataDir, `state-${VILLAGE_WORLD}.json`) : join(__dirname, `state-${VILLAGE_WORLD}.json`);
-const USAGE_FILE = process.env.VILLAGE_USAGE_FILE || null;
 const LOGS_DIR = _dataDir ? join(_dataDir, 'logs') : join(__dirname, 'logs');
 
 // --- Event log file (JSONL, one file per day) ---
@@ -154,10 +152,6 @@ async function saveState() {
 }
 
 // --- Cost tracking ---
-
-function readBotDailyCost(botName) {
-  return readBotDailyCostImpl(botName, USAGE_FILE, readFile);
-}
 
 function accumulateResponseCost(botName, response) {
   if (!response?.usage) return;

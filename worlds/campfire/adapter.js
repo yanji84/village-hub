@@ -8,7 +8,7 @@
  *   onJoin(state, botName, displayName)   → extra event fields
  *   onLeave(state, botName, displayName)  → extra event fields
  *
- * See docs/WORLD_DEVELOPMENT.md for the full adapter interface reference.
+ * See README.md for the full adapter interface reference.
  */
 
 // --- State lifecycle ---

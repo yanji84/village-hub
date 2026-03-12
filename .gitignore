@@ -1,4 +1,5 @@
 *.json.bak
+state-*.json
 logs/
 .env
 data/

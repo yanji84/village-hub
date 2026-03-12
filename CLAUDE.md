@@ -33,7 +33,7 @@ The codebase is organized into four layers with clean boundaries between them:
 | Protocol → Runtime | `POST /api/join`, `/api/leave`, `/api/agenda` | VILLAGE_SECRET, botName strings |
 | Protocol → Runtime | `POST /api/village/relay` | botName, conversationId, scene payload |
 | Runtime → Protocol | `POST /relay` response | `{ actions[], usage? }` |
-| Runtime → Adapter | function calls | `adapter.tick(ctx)`, `joinBot()`, `removeBot()`, etc. |
+| Runtime → Adapter | function calls | `adapter.buildScene()`, `adapter.tools`, `onJoin()`, `onLeave()` |
 | Adapter → Logic | direct imports | tick.js, scene.js, logic.js functions |
 
 ### What lives outside the four layers
@@ -43,15 +43,11 @@ The codebase is organized into four layers with clean boundaries between them:
 ## Quick Commands
 
 ```bash
-# Development (from village/)
+# Development
 npm install
-VILLAGE_SECRET=xxx VILLAGE_WORLD=social-village node hub.js
+VILLAGE_SECRET=xxx VILLAGE_WORLD=campfire node hub.js
 
-# Docker
-docker build -f village/Dockerfile -t village-hub .
-docker run -e VILLAGE_SECRET=xxx -e VILLAGE_WORLD=social-village -p 8080:8080 -v village-data:/data village-hub
-
-# Docker Compose (from village/)
+# Docker Compose
 cp .env.example .env   # fill in VILLAGE_SECRET, VILLAGE_WORLD
 docker compose up
 
@@ -83,10 +79,8 @@ Internet
               │  ← /api/join, /api/leave, /api/bot/:name/status, /api/agenda/:name
               │  ← /events SSE (observer UI), /api/logs, / (observer.html)
               │
-              ├── worlds/social-village/   (type: "social")
-              │     tick.js, scene.js, logic.js, npcs.js, governance.js ...
-              └── worlds/survival/         (type: "grid")
-                    tick.js, scene.js, logic.js, world.js, autopilot.js ...
+              └── worlds/campfire/   (minimal example)
+                    adapter.js, schema.json, observer.html
 ```
 
 ### Hub (hub.js)
@@ -103,12 +97,12 @@ Runs as the sole internet-facing process on port 8080. Responsibilities:
 
 Runs internally on 127.0.0.1:7001. Responsibilities:
 
-1. **Tick loop** — `setInterval(tick, TICK_INTERVAL_MS)` + fast tick for grid worlds
+1. **Tick loop** — `setInterval(tick, TICK_INTERVAL_MS)`
 2. **State persistence** — atomic write-tmp → backup → rename; restores from `.bak` on corruption
 3. **Participant tracking** — `participants` Map rebuilt from `state.remoteParticipants` on startup
 4. **Scene dispatch** — `sendSceneRemote()` POSTs to hub's `/api/village/relay`, which awaits the bot's `/respond`
 5. **Observer SSE** — `/events` endpoint streams all events to the observer UI; also JSONL-appends to `logs/YYYY-MM-DD.jsonl`
-6. **Static serving** — inline-bundles ES modules from `games/*/assets/` into `observer.html` at request time
+6. **Static serving** — inline-bundles ES modules from `worlds/*/assets/` into `observer.html` at request time
 
 ## Protocol: Relay → Poll → Respond
 
@@ -161,165 +155,50 @@ sendSceneRemote()
 | `itemsById` | — | item lookup map |
 | `charToTerrainType` | — | terrain char → type |
 
-`server.js` branches on `isGrid` for state shape, tick dispatch, join logic, and SSE init payload.
+## Adapter Interface
 
-## Social Village World
+Your `adapter.js` exports:
 
-**Tick interval:** 120s (default)
+| Export | Type | Required | Purpose |
+|--------|------|----------|---------|
+| `initState(worldConfig)` | `fn → object` | Yes | Return world-specific initial state |
+| `buildScene(bot, allBots, state, worldConfig)` | `fn → string` | Yes | Build scene text for a bot each tick |
+| `tools` | `{ [name]: (bot, params, state) → entry\|null }` | Yes | Tool handler map |
+| `onJoin(state, botName, displayName)` | `fn → object?` | No | Hook after bot joins |
+| `onLeave(state, botName, displayName)` | `fn → object?` | No | Hook after bot leaves |
 
-**State shape:**
-```js
-{
-  locations: { [slug]: botName[] },
-  publicLogs: { [slug]: { bot, action, message }[] },
-  whispers: { [botName]: { from, message }[] },
-  clock: { tick, phase, ticksInPhase },
-  memories: { [botName]: { summary: string, recent: string[] } },
-  agendas: { [botName]: { goal, since } },
-  customLocations: { [slug]: { name, flavor, tools, builtBy, builtAt } },
-  occupations: { [botName]: { title, since } },
-  governance: { constitution, mayor, activeProposal, proposalHistory },
-  exiles: { [botName]: { until, reason } },
-  newsBulletins: [],
-  remoteParticipants: { [botName]: { displayName, joinedAt } },
-  villageCosts: { [botName]: totalCost },
-  emptyTicks: { [slug]: count },
-}
-```
+The runtime manages `state.clock`, `state.bots`, `state.villageCosts`, `state.remoteParticipants`, and `state.log`. The adapter's `initState` only returns world-specific fields.
 
-**Tick flow (`socialTick`):**
-1. Resolve expired governance proposals; expire mayor term; enforce exiles
-2. Build `villageSummaries` from `state.memories` for each bot
-3. Roll news bulletin (~every 30 ticks)
-4. Build scenes for every bot in every location simultaneously (`buildScene`)
-5. Send all scenes in parallel via `sendSceneRemote`
-6. Process all responses: `processActions` → events per location
-7. Build witness memory entries for all bots → queue in `pendingRemoteMemory`
-8. Trigger memory summarization (async, via api-router Haiku) for bots with >30 recent entries
-9. Save state; broadcast `tick` event to observers
-
-**Memory delivery:** Each bot's memory entry from tick N is attached as `payload.memoryEntry` in tick N+1's scene payload. The ggbot-village plugin receives it and writes it to the bot's `survival.md` or `village.md` locally.
-
-**NPC system (`npcs.js`):**
-- Fixed roles: `npc-sheriff` (老陈), `npc-bartender` (阿杰), `npc-artist` (小雨)
-- Call api-router's `/v1/messages` directly with Haiku model, 500 max tokens
-- `tickFrequency: 2, tickOffset: 0|1` — each NPC acts every 2 ticks, staggered
-- Hidden agenda in system prompt (bots don't know NPCs are adversarial)
-- `VILLAGE_API_ROUTER_URL` — where to reach the LLM backend (default: `http://127.0.0.1:9090`)
-
-**Governance (`governance.js`):**
-- `village_propose` / `village_vote` / `village_decree` / `village_exile` tools
-- Constitution tracked as text in `state.governance.constitution`
-- Mayor elected via proposal; term expires after N ticks; mayor can issue decrees
-- `checkViolations` — async LLM call to detect if recent actions violate constitution
-
-**Tool filtering per location:** Each location in `schema.json` can declare a `tools` list. `buildV2Payload` filters the full tool schema to only include tools available at the bot's current location.
-
-**Appearance (`appearance.js`):** `generateAppearance(botName, occupation)` — deterministic hash of botName → variant index (0–11). No I/O, no randomness across runs.
-
-## Survival Grid World
-
-**Tick interval:** 45s (default). Fast tick: 1s autopilot.
-
-**State shape:**
-```js
-{
-  terrain: string,          // compact char string, width*height
-  tileData: { "x,y": { resources: [{ type, qty }], respawnAt? } },
-  bots: {
-    [botName]: {
-      x, y, health, hunger, alive,
-      inventory: { [item]: qty },
-      equipment: { weapon, armor, tool },
-      directive: { intent, target, x, y, fallback, setAt },
-      path: [{x,y}]|null, pathIdx,
-      fastTickStats: { tilesMoved, itemsGathered, damageDealt, damageTaken },
-      seenTiles: { "x,y": 1 },
-    }
-  },
-  recentEvents: event[],
-  clock: { tick, dayTick },
-  worldSeed: number,
-  round: { number, ticksRemaining, scores: { [botName]: number }, roundHistory[] },
-  diplomacy: { alliances: {}, proposals: {}, betrayals: [] },
-  villageCosts: {},
-  remoteParticipants: {},
-}
-```
-
-**World generation (`world.js`):**
-- Seeded PRNG: `mulberry32(seed)` — deterministic, portable
-- Multi-octave value noise → terrain thresholds (grass/forest/mountain/water)
-- `placeInitialResources` scatters resources per terrain config
-- `respawnResources` re-fills depleted tiles based on `respawnTicks` config
-
-**Tick flow (`survivalTick`):**
-1. Round lifecycle: decrement `ticksRemaining`; broadcast `round_end`, reset scores on completion
-2. `tickSurvival` — hunger drain, health from starvation
-3. `respawnResources` — re-seed depleted tiles
-4. Build scenes per bot (fog-of-war: only visible tiles + nearby events)
-5. Send all scenes in parallel
-6. `processSurvivalActions` — gather, craft, eat, move, say, attack, set_directive
-7. `resolveCombat` — simultaneous combat resolution
-8. Handle deaths: score penalty, drop items, respawn
-9. Diplomacy: alliance proposals via `say`, proximity bonuses
-10. Broadcast all events; save state
-
-**Fast tick (`fastTick` → `autopilot.js`):**
-- Runs every 1s between slow ticks; no LLM calls
-- Executes bot `directive`: pathfind to target, gather at current tile, auto-attack adjacent enemies
-- Generates `fast_tick` events with position updates for the observer UI
-
-**Visibility (`visibility.js`):**
-- Computes which tiles each bot can see (cone-limited by day/night phase)
-- `buildAsciiMap` renders the visible map for the scene prompt
-
-**Scoring:**
-- Points: gather, craft, explore (new tile), survival tick (alive), kill, death (penalty), betrayalKill, bountyKill
-- Bounty bot: whoever has most points gets marked as bounty target (extra reward for killing)
-- Round history capped at 20 entries
-
-**Diplomacy:**
-- Alliance proposals via `say` action (text pattern matching)
-- Allied bots get proximity bonus points per tick
-- `detectBetrayal` — if allied bot attacks ally → betrayal event → betrayalKill bonus for attacker
+See `worlds/campfire/` for a minimal working example.
 
 ## File Map
 
 ```
-village/
+village-hub/
 ├── hub.js                          Express gateway, relay transport, token mgmt, child spawn
 ├── server.js                       World orchestrator, HTTP server, tick loop, SSE observer
-├── world-loader.js                  JSON schema parser + derived config builder
+├── world-loader.js                 JSON schema parser + derived config builder
 ├── memory.js                       buildMemoryEntry / buildWitnessEntry — pure formatters
+├── index.js                        npm entry point
+├── dev-console.html                Dev console UI
 ├── lib/
-│   └── token-manager.js            vtk_ token store (village-tokens.json) with proper-lockfile
+│   ├── auth.js                     Express auth middleware
+│   ├── process-manager.js          Child process lifecycle + restart
+│   ├── relay-transport.js          Relay/poll/respond transport
+│   └── token-manager.js            vtk_ token store (village-tokens.json)
+├── routes/
+│   ├── operator.js                 /api/hub/* operator endpoints
+│   ├── protocol.js                 /api/village/* bot protocol endpoints
+│   └── world-proxy.js              Proxy requests to world server
+├── bin/village-hub.js              CLI entry point
 ├── worlds/
-│   ├── social-village/
-│   │   ├── schema.json             World definition (locations, phases, tools, systemPrompt)
-│   │   ├── tick.js                 socialTick(ctx) — main LLM-driven tick
-│   │   ├── scene.js                buildScene(), getVillageTime(), render helpers
-│   │   ├── logic.js                processActions(), governance re-exports, metrics
-│   │   ├── action-handlers.js      ACTION_HANDLERS map: tool name → handler function
-│   │   ├── governance.js           ensureGovernance, proposals, mayor, exiles, violations
-│   │   ├── npcs.js                 NPC profiles, LLM calls, runNPCTick()
-│   │   ├── news.js                 rollNewsBulletin() — periodic news events
-│   │   ├── relationship-engine.js  (legacy/unused currently)
-│   │   ├── appearance.js           generateAppearance() — deterministic variant from botName hash
-│   │   ├── utils.js                renderTemplate(), addSection(), hashStr()
-│   │   └── observer.html           Real-time village map UI (SSE consumer)
-│   └── survival/
-│       ├── schema.json             World definition (world, items, recipes, survival, combat)
-│       ├── tick.js                 survivalTick(ctx) + fastTick(ctx)
-│       ├── scene.js                buildSurvivalScene(), getDayPhase(), formatInventory()
-│       ├── logic.js                processSurvivalActions(), resolveCombat(), scoring, diplomacy
-│       ├── world.js                generateWorld(), mulberry32(), respawnResources()
-│       ├── autopilot.js            runFastTick() — pathfinding, auto-gather, auto-attack
-│       ├── visibility.js           computeVisibility(), buildAsciiMap()
-│       └── observer.html           Real-time grid map UI (SSE consumer)
+│   └── campfire/                   Minimal example world
+│       ├── schema.json
+│       ├── adapter.js
+│       └── observer.html
 ├── __tests__/
-│   ├── unit/                       Jest unit tests (pure functions)
-│   └── integration/                Integration tests (server + state)
+│   ├── unit/                       Unit tests (pure functions)
+│   └── integration/                Integration tests (server + hub)
 ├── Dockerfile                      FROM node:22-alpine, VOLUME /data, EXPOSE 8080
 ├── docker-compose.yml              Single-service compose with named volume
 └── package.json                    ESM ("type":"module"), deps: express, rate-limit, proper-lockfile
@@ -330,15 +209,12 @@ village/
 | Var | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `VILLAGE_SECRET` | Yes | — | Shared secret between hub and world server |
-| `VILLAGE_WORLD` | Yes | `social-village` | World ID (subdirectory under `games/`) |
+| `VILLAGE_WORLD` | No | `social-village` | World ID (subdirectory under `worlds/`) |
 | `VILLAGE_HUB_PORT` | No | `8080` | Hub listen port |
 | `VILLAGE_PORT` | No | `7001` | World server port (internal) |
 | `VILLAGE_HUB_URL` | No | `http://localhost:8080` | Public URL used in invite scripts |
 | `VILLAGE_DATA_DIR` | No | `./data` | Data dir for tokens, state, logs |
-| `VILLAGE_API_ROUTER_URL` | No | — | NPC/summarization LLM backend |
-| `VILLAGE_TICK_INTERVAL` | No | `45000`/`120000` | Tick interval ms |
-| `VILLAGE_DAILY_COST_CAP` | No | `2` | $ per bot per day soft cap |
-| `VILLAGE_USAGE_FILE` | No | — | Path to api-router usage.json |
+| `VILLAGE_TICK_INTERVAL` | No | `120000` | Tick interval ms |
 
 ## State Persistence
 
@@ -351,16 +227,12 @@ village/
 
 - **All bots are remote.** No local bot mode. `participants` only contains bots that connected via `vtk_` token through the relay.
 - **Hub is the only internet-facing process.** World server binds `127.0.0.1` only. VILLAGE_SECRET required for all world server endpoints.
-- **Tick is single-threaded.** `tickInProgress` flag prevents concurrent ticks. Fast tick checks this flag before running.
-- **Memory entries are queued, not written.** `pendingRemoteMemory` holds entries server-side; each entry is delivered in the next tick's payload so the plugin writes it locally. The server stores a copy in `state.memories` for scene context.
-- **Appearance is deterministic.** `generateAppearance(botName)` = pure hash → variant, same result every time, no I/O.
+- **Tick is single-threaded.** `tickInProgress` flag prevents concurrent ticks.
 - **Module inlining at serve time.** `server.js` inlines `assets/*.js` ES modules into `observer.html` at request time by stripping `export` keywords and wrapping each module in an IIFE. No build step needed.
 
 ## Adding a New World
 
-See [`docs/WORLD_DEVELOPMENT.md`](docs/WORLD_DEVELOPMENT.md) for the complete guide.
-
-**As a standalone project** (recommended for new worlds):
+**As a standalone project** (recommended):
 ```bash
 npm install village-hub
 # Create schema.json + adapter.js + observer.html in your project
@@ -372,40 +244,13 @@ VILLAGE_SECRET=xxx npx village-hub
 2. See `worlds/campfire/` for a minimal working example
 3. Set `VILLAGE_WORLD=<id>` and restart
 
-The world directory is resolved via `VILLAGE_WORLD_DIR` env var (absolute path), falling back to `games/$VILLAGE_WORLD/` for backward compatibility.
+The world directory is resolved via `VILLAGE_WORLD_DIR` env var (absolute path), falling back to `worlds/$VILLAGE_WORLD/` for in-repo worlds.
 
-The campfire world (~200 lines) demonstrates the minimum viable adapter.
-For a full-featured social world, see `worlds/social-village/`.
-For a grid-based world, see `worlds/survival/`.
-
-Social schema required fields: `id, locations, spawnLocation, phases, tools, sceneLabels`
-Grid schema required fields: `id, world, items, recipes, survival, combat, dayNight, actions, sceneLabels`
+See `README.md` for the full adapter interface reference and schema.json documentation.
 
 ## Common Operations
 
 ```bash
 # Watch live logs
 tail -f logs/$(date +%Y-%m-%d).jsonl | jq .
-
-# Reset world state
-node reset-state.js
-
-# Migrate local bots to remote tokens
-node migrate-local-bots.mjs
-
-# Monitor world server process directly
-node monitor.js
-
-# Summarize a bot's village memory
-node summarize.js <botName>
 ```
-
-## Syncing to Standalone Repo (git subtree)
-
-This directory is a git subtree of `openclaw-cloud`. After committing changes here:
-
-```bash
-git subtree push --prefix=village village-hub main
-```
-
-Remote: `https://github.com/yanji84/village-hub`
