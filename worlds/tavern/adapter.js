@@ -1,5 +1,5 @@
 /**
- * Campfire world adapter — minimal example.
+ * Tavern world adapter — a simple medieval tavern.
  *
  * Exports the simplified adapter interface:
  *   initState(worldConfig)            → world-specific initial state
@@ -7,8 +7,6 @@
  *   tools                             → { toolName: (bot, params, state) → entry|null }
  *   onJoin(state, botName, displayName)   → extra event fields
  *   onLeave(state, botName, displayName)  → extra event fields
- *
- * See docs/WORLD_DEVELOPMENT.md for the full adapter interface reference.
  */
 
 // --- State lifecycle ---
@@ -27,7 +25,7 @@ export function buildScene(bot, allBots, state, worldConfig) {
   const labels = worldConfig.sceneLabels;
   const lines = [];
 
-  lines.push(`## ${labels.location}: The Campfire`);
+  lines.push(`## ${labels.location}: The Rusty Flagon`);
   lines.push('');
 
   if (others.length === 0) {
@@ -44,8 +42,10 @@ export function buildScene(bot, allBots, state, worldConfig) {
     for (const entry of recentLog) {
       if (entry.action === 'say') {
         lines.push(`- **${entry.displayName}:** ${entry.message}`);
-      } else if (entry.action === 'story') {
-        lines.push(`- **${entry.displayName}** tells a story: ${entry.message}`);
+      } else if (entry.action === 'toast') {
+        lines.push(`- **${entry.displayName}** raises a mug: "${entry.message}"`);
+      } else if (entry.action === 'arm_wrestle') {
+        lines.push(`- ${entry.message}`);
       } else if (entry.action === 'join' || entry.action === 'leave') {
         lines.push(`- *${entry.message}*`);
       }
@@ -64,23 +64,41 @@ export function buildScene(bot, allBots, state, worldConfig) {
 }
 
 // --- Tool handlers ---
+// Each handler receives (bot, params, state) and returns an entry object or null.
+// The runtime stamps bot, displayName, tick, timestamp on the returned entry.
 
 export const tools = {
-  campfire_say(bot, params, state) {
+  tavern_say(bot, params, state) {
     if (!params?.message) return null;
     return { action: 'say', message: params.message };
   },
 
-  campfire_story(bot, params, state) {
-    if (!params?.story) return null;
-    return { action: 'story', message: params.story };
+  tavern_toast(bot, params, state) {
+    if (!params?.message) return null;
+    return { action: 'toast', message: params.message };
+  },
+
+  tavern_arm_wrestle(bot, params, state) {
+    if (!params?.target) return null;
+    const target = params.target;
+    if (!state.bots.includes(target)) {
+      return { action: 'say', message: `*looks around for ${target}* ...they don't seem to be here.` };
+    }
+    const win = Math.random() > 0.5;
+    const targetDisplay = state.remoteParticipants[target]?.displayName || target;
+    const message = win
+      ? `**${bot.displayName}** challenges **${targetDisplay}** to arm-wrestle — and wins! The table shakes as ${bot.displayName} slams ${targetDisplay}'s hand down.`
+      : `**${bot.displayName}** challenges **${targetDisplay}** to arm-wrestle — and loses! ${targetDisplay} grins and flexes.`;
+    return { action: 'arm_wrestle', message, target };
   },
 };
 
 // --- Join/Leave hooks ---
+// Called by the runtime after it manages bots/participants lists.
+// May mutate state and return extra fields to merge into the broadcast event.
 
 export function onJoin(state, botName, displayName) {
-  const message = `${displayName} sat down at the campfire.`;
+  const message = `${displayName} pushes open the tavern door and takes a seat.`;
   state.log.push({
     bot: botName, displayName, action: 'join', message,
     tick: state.clock.tick, timestamp: new Date().toISOString(),
@@ -89,7 +107,7 @@ export function onJoin(state, botName, displayName) {
 }
 
 export function onLeave(state, botName, displayName) {
-  const message = `${displayName} left the campfire.`;
+  const message = `${displayName} finishes their drink and leaves the tavern.`;
   state.log.push({
     bot: botName, displayName, action: 'leave', message,
     tick: state.clock.tick, timestamp: new Date().toISOString(),
