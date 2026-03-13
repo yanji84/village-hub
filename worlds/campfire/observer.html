@@ -68,7 +68,8 @@
     }
 
     // --- SSE ---
-    const events = new EventSource('/events');
+    const basePath = window.location.pathname.replace(/\/+$/, '');
+    const events = new EventSource(basePath + '/events');
 
     events.onmessage = (e) => {
       const data = JSON.parse(e.data);

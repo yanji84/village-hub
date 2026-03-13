@@ -53,9 +53,10 @@ function buildScene(bot, ctx) {
   lines.push('');
 
   lines.push(`### ${labels.availableActions}`);
-  for (const tool of (worldConfig.raw.tools || [])) {
-    lines.push(`- **${tool.id}**: ${tool.description}`);
+  for (const tool of (worldConfig.raw.toolSchemas || [])) {
+    lines.push(`- **${tool.name}**: ${tool.description}`);
   }
+  lines.push(`- **village_journal**: Record a private reflection about this moment — what you noticed, felt, or plan to do. Called AFTER your action.`);
   lines.push('');
   lines.push(labels.yourTurn);
 

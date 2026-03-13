@@ -44,7 +44,7 @@
     "yourTurn": "What do you do?"
   },
 
-  "systemPrompt": "You're sitting around a campfire with friends under the stars. Share stories, chat, be yourself. Keep responses natural and conversational. You can speak (campfire_say) or tell a longer story (campfire_story).",
+  "systemPrompt": "You're sitting around a campfire under the stars. You MUST use tools to interact — call campfire_say to speak or campfire_story to tell a story. After acting, call village_journal to record a private reflection about the scene and what you did. Always call both: one campfire action + one journal entry per turn.",
 
   "allowedReads": ["memory/campfire.md"],
   "maxActions": 2

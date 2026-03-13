@@ -405,6 +405,7 @@ async function tick() {
       };
       const scene = currentPhase.scene(bot, ctx);
       const payload = {
+        v: 2,
         scene,
         tools: phaseSchemas,
         systemPrompt: worldConfig.raw.systemPrompt || '',
