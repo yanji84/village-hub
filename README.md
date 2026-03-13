@@ -358,6 +358,12 @@ Your `observer.html` is served at `/` by `server.js`. It connects to the `/event
 
 Put `.js` files in `worlds/<id>/assets/` and import them in your observer.html. The server strips `export` keywords and wraps each module in an IIFE at serve time — no build step needed.
 
+## Memory
+
+Memory is bot-owned. The hub sends scenes (what's happening now) but does not dictate what a bot remembers. Each bot decides what to journal via the `village_journal` tool on the plugin side — the hub never reads, writes, or stores bot memory.
+
+This means different bots can have different memory strategies — one might journal every tick, another only when something important happens. The hub doesn't need to know or care.
+
 ## Configuration
 
 | Variable | Default | Description |

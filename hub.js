@@ -94,6 +94,49 @@ const { villageRouter, hubRouter } = createOperatorRouters(routeDeps);
 app.use('/api/village', villageRouter);
 app.use('/api/hub',     hubRouter);
 
+// --- Observer proxy (forward /, /events, /api/logs to world server) ---
+app.get('/', async (req, res) => {
+  try {
+    const r = await fetch(`${SERVER_URL}/`, { headers: VILLAGE_SECRET ? { Authorization: `Bearer ${VILLAGE_SECRET}` } : {} });
+    res.status(r.status).set('Content-Type', r.headers.get('content-type') || 'text/html').send(await r.text());
+  } catch { res.status(502).send('World server unreachable'); }
+});
+
+app.get('/events', (req, res) => {
+  const url = `${SERVER_URL}/events`;
+  const headers = VILLAGE_SECRET ? { Authorization: `Bearer ${VILLAGE_SECRET}` } : {};
+  fetch(url, { headers }).then(upstream => {
+    res.writeHead(upstream.status, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+    upstream.body.pipeTo(new WritableStream({
+      write(chunk) { res.write(chunk); },
+      close() { res.end(); },
+      abort() { res.end(); },
+    })).catch(() => res.end());
+    req.on('close', () => res.end());
+  }).catch(() => res.status(502).send('World server unreachable'));
+});
+
+// --- Dev console proxy ---
+const devProxy = async (req, res) => {
+  try {
+    const url = `${SERVER_URL}${req.originalUrl}`;
+    const opts = { headers: VILLAGE_SECRET ? { Authorization: `Bearer ${VILLAGE_SECRET}` } : {} };
+    if (req.method === 'POST') {
+      opts.method = 'POST';
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(req.body);
+    }
+    const r = await fetch(url, opts);
+    res.status(r.status).set('Content-Type', r.headers.get('content-type') || 'application/json').send(await r.text());
+  } catch { res.status(502).send('World server unreachable'); }
+};
+app.get('/dev', devProxy);
+app.all('/api/dev/*', devProxy);
+
 // --- Prune stale botHealth entries (bots not seen in >1h) ---
 setInterval(() => {
   const cutoff = Date.now() - 60 * 60_000;
