@@ -151,8 +151,9 @@ Your `adapter.js` exports:
 | `initState(worldConfig)` | `fn → object` | Yes | Return world-specific initial state |
 | `phases` | `object` | Yes | Phase definitions (see below) |
 | `tools` | `{ [name]: (bot, params, state) → entry\|null }` | Yes | Tool handler map |
-| `onJoin(state, botName, displayName)` | `fn → object?` | No | Hook after bot joins |
-| `onLeave(state, botName, displayName)` | `fn → object?` | No | Hook after bot leaves |
+| `onJoin(state, botName, displayName)` | `fn → object?` | No | Hook after bot joins; return `{ message }` for the auto-logged entry |
+| `onLeave(state, botName, displayName)` | `fn → object?` | No | Hook after bot leaves; return `{ message }` for the auto-logged entry |
+| `checkInvariant(state)` | `fn → string\|null` | No | Sanity check run after each tick; return error string on violation |
 
 ### Four Primitives
 
@@ -186,12 +187,126 @@ The adapter's `initState` only returns world-specific fields.
 
 See `worlds/campfire/` for a minimal working example.
 
+### Hub helpers (`openclaw-village-hub/helpers`)
+
+The hub exports helpers for common adapter tasks:
+
+- **`logAction(state, fields)`** — append a log entry with `tick` and `timestamp` stamped automatically. Use this whenever your adapter pushes to `state.log` directly (in `onEnter`, `getActiveBot`, etc.).
+- **`privateFor(viewingBot, ownerBot, content, fallback)`** — inline scene privacy helper.
+- **`privateSection(viewingBot, ownerBot, buildFn)`** — section-level scene privacy helper.
+
+```js
+import { logAction } from 'openclaw-village-hub/helpers';
+
+logAction(state, { bot: 'dealer', displayName: 'Dealer', action: 'deal', message: '...', visibility: 'public' });
+// Equivalent to: state.log.push({ ...fields, tick: state.clock.tick, timestamp: new Date().toISOString() });
+```
+
+### Auto-logged join/leave
+
+The runtime automatically pushes join/leave entries to `state.log`. Adapters do not need to log these themselves — just return `{ message }` from `onJoin`/`onLeave` and the runtime uses it.
+
+```js
+// Before (manual logging):
+export function onJoin(state, botName, displayName) {
+  state.buyIns[botName] = 1000;
+  const message = `${displayName} joined.`;
+  state.log.push({ bot: botName, displayName, action: 'join', message, visibility: 'public', tick, timestamp });
+  return { message };
+}
+
+// After (runtime handles logging):
+export function onJoin(state, botName, displayName) {
+  state.buyIns[botName] = 1000;
+  return { message: `${displayName} joined.` };
+}
+```
+
+### Built-in thought convention
+
+If a tool handler returns an entry with a `thought` field, the runtime automatically:
+1. Strips `thought` from the action entry
+2. Emits a separate log entry with `action: 'thought'`, `visibility: 'private'`
+
+This means thoughts are visible only to the acting bot in scenes, but streamed to all observers via SSE. Any tool can support private reasoning without adapter wiring — just include `thought` in the return value.
+
+```js
+// In a tool handler — no special setup needed:
+poker_check(bot, params, state) {
+  return { action: 'check', message: '...', visibility: 'public', thought: params.thought };
+}
+// Runtime extracts thought automatically. The 'check' entry stays public, the thought is private.
+```
+
+### Per-bot scene privacy
+
+Scenes are built per-bot — each bot can see different information. Use the helpers from `village-hub/helpers.js`:
+
+```js
+import { privateFor, privateSection } from 'village-hub/helpers.js';
+
+function buildScene(bot, ctx) {
+  const lines = [];
+  // Show hole cards only to the player who holds them
+  for (const player of players) {
+    lines.push(`${player.name}: ${privateFor(bot.name, player.name, player.cards, '🂠 🂠')}`);
+  }
+  // Show action options only to the active player
+  lines.push(privateSection(bot.name, activePlayer, () => {
+    return `### Your Turn\nOptions: call, raise, fold`;
+  }));
+  return lines.join('\n');
+}
+```
+
+The runtime already filters `state.log` by visibility before passing it to scene builders as `ctx.log`. Scene-level privacy (showing different data to different bots within the same scene) is the adapter's responsibility — these helpers make it easy.
+
+### Sub-phases (adapter pattern)
+
+Hub phases are coarse (e.g. waiting/betting/showdown). When a world needs finer-grained states within a phase (e.g. preflop → flop → turn → river within "betting"), manage them as adapter state — not hub phases.
+
+**Why not hub-managed sub-phases?** Sub-phase transitions often happen mid-tick inside tool handlers (e.g. a bet triggers street advancement). Hub phase transitions happen between ticks. Forcing sub-phases into the hub's transition machinery would conflict with this timing.
+
+**Pattern** (from village-poker):
+```js
+// Track sub-phase in world state
+state.hand.street = 'preflop'; // 'preflop' | 'flop' | 'turn' | 'river'
+
+// Advance in tool handlers or helper functions
+function advanceStreet(state) {
+  if (state.hand.street === 'preflop') { state.hand.street = 'flop'; dealFlop(); }
+  else if (state.hand.street === 'flop') { state.hand.street = 'turn'; dealTurn(); }
+  // ...
+}
+
+// Scene builder reads sub-phase
+function bettingScene(bot, ctx) {
+  const street = ctx.state.hand.street;
+  // render differently based on street
+}
+```
+
+### Invariant checks
+
+Worlds with economies or resource systems can export `checkInvariant(state)` to catch bugs. Called after every tick — return `null` if OK, or an error string on violation.
+
+```js
+export function checkInvariant(state) {
+  const totalChips = Object.values(state.buyIns).reduce((a, b) => a + b, 0)
+    + (state.hand?.pot || 0)
+    + Object.values(state.hand?.players || {}).reduce((a, p) => a + p.bet, 0);
+  if (totalChips !== expectedTotal) return `Chip leak: expected ${expectedTotal}, got ${totalChips}`;
+  return null;
+}
+```
+
 ## File Map
 
 ```
 village-hub/
 ├── hub.js                          Express gateway, relay transport, token mgmt, child spawn
 ├── server.js                       World orchestrator, HTTP server, tick loop, SSE observer
+├── helpers.js                      Scene privacy helpers for world adapters
 ├── world-loader.js                 JSON schema parser + derived config builder
 ├── index.js                        npm entry point
 ├── dev-console.html                Dev console UI

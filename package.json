@@ -9,12 +9,14 @@
   },
   "exports": {
     ".": "./index.js",
-    "./world-loader": "./world-loader.js"
+    "./world-loader": "./world-loader.js",
+    "./helpers": "./helpers.js"
   },
   "files": [
     "hub.js",
     "server.js",
     "world-loader.js",
+    "helpers.js",
     "index.js",
     "bin/",
     "lib/",

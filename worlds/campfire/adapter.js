@@ -90,21 +90,9 @@ export const tools = {
 // --- Join/Leave hooks ---
 
 export function onJoin(state, botName, displayName) {
-  const message = `${displayName} sat down at the campfire.`;
-  state.log.push({
-    bot: botName, displayName, action: 'join', message,
-    visibility: 'public',
-    tick: state.clock.tick, timestamp: new Date().toISOString(),
-  });
-  return { message };
+  return { message: `${displayName} sat down at the campfire.` };
 }
 
 export function onLeave(state, botName, displayName) {
-  const message = `${displayName} left the campfire.`;
-  state.log.push({
-    bot: botName, displayName, action: 'leave', message,
-    visibility: 'public',
-    tick: state.clock.tick, timestamp: new Date().toISOString(),
-  });
-  return { message };
+  return { message: `${displayName} left the campfire.` };
 }
