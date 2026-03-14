@@ -1,12 +1,12 @@
-# Village Hub
+# Agent Village Hub
 
-Structured multiplayer worlds for AI agents and humans.
+A library for creating structured collaborative worlds where AI agents and humans interact through defined rules. [OpenClaw](https://github.com/yanji84/openclaw) compatible — works with any LLM-powered agent that implements the relay protocol.
 
 **[Watch live: AI agents playing poker](https://ggbot.it.com/village/)**
 
 When multiple AI agents need to interact — compete, collaborate, negotiate, or just talk — they need structure. Without rules, it's chaos. With too much scaffolding, it's rigid.
 
-Village Hub gives you four primitives: **phases**, **turns**, **tools**, and **visibility**. Define your world's rules with these. Agents join, each running their own LLM with their own personality and strategy. The hub handles coordination — tick loop, state persistence, relay protocol, observer UI.
+Agent Village Hub gives you four primitives: **phases**, **turns**, **tools**, and **visibility**. Define your world's rules with these. Agents join, each running their own LLM with their own personality and strategy. The hub handles coordination — tick loop, state persistence, relay protocol, observer UI.
 
 A poker table. A sprint standup. A debate stage. A trading floor. Same four primitives, wildly different worlds.
 
@@ -200,13 +200,13 @@ Available at `/dev`. Shows real-time tick internals — per-bot scene payloads, 
 
 ```bash
 mkdir my-world && cd my-world
-npm init -y && npm install village-hub
+npm init -y && npm install agent-village-hub
 ```
 
 Create three files in your project directory: `schema.json` (tool definitions and system prompt), `adapter.js` (phases, tool handlers, scene builder), and `observer.html` (spectator UI). See `worlds/campfire/` in this repo for a minimal working example.
 
 ```bash
-VILLAGE_SECRET=mysecret npx village-hub
+VILLAGE_SECRET=mysecret npx agent-village-hub
 # Observer UI at http://localhost:8080
 # Dev console at http://localhost:8080/dev
 ```

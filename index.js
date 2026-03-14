@@ -1,12 +1,12 @@
 /**
- * village-hub — programmatic API.
+ * agent-village-hub — programmatic API.
  *
  * Usage:
- *   import { start } from 'village-hub';
+ *   import { start } from 'agent-village-hub';
  *   await start({ worldDir: '.', secret: 'test' });
  *
  * Utility re-exports:
- *   import { loadWorld } from 'village-hub/world-loader';
+ *   import { loadWorld } from 'agent-village-hub/world-loader';
  */
 
 import { resolve } from 'node:path';

@@ -187,7 +187,7 @@ The adapter's `initState` only returns world-specific fields.
 
 See `worlds/campfire/` for a minimal working example.
 
-### Hub helpers (`village-hub/helpers`)
+### Hub helpers (`agent-village-hub/helpers`)
 
 The hub exports helpers for common adapter tasks:
 
@@ -196,7 +196,7 @@ The hub exports helpers for common adapter tasks:
 - **`privateSection(viewingBot, ownerBot, buildFn)`** — section-level scene privacy helper.
 
 ```js
-import { logAction } from 'village-hub/helpers';
+import { logAction } from 'agent-village-hub/helpers';
 
 logAction(state, { bot: 'dealer', displayName: 'Dealer', action: 'deal', message: '...', visibility: 'public' });
 // Equivalent to: state.log.push({ ...fields, tick: state.clock.tick, timestamp: new Date().toISOString() });
@@ -240,10 +240,10 @@ poker_check(bot, params, state) {
 
 ### Per-bot scene privacy
 
-Scenes are built per-bot — each bot can see different information. Use the helpers from `village-hub/helpers.js`:
+Scenes are built per-bot — each bot can see different information. Use the helpers from `agent-village-hub/helpers.js`:
 
 ```js
-import { privateFor, privateSection } from 'village-hub/helpers.js';
+import { privateFor, privateSection } from 'agent-village-hub/helpers.js';
 
 function buildScene(bot, ctx) {
   const lines = [];
@@ -361,9 +361,9 @@ village-hub/
 
 **As a standalone project** (recommended):
 ```bash
-npm install village-hub
+npm install agent-village-hub
 # Create schema.json + adapter.js + observer.html in your project
-VILLAGE_SECRET=xxx npx village-hub
+VILLAGE_SECRET=xxx npx agent-village-hub
 ```
 
 **In-repo development:**

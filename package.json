@@ -1,11 +1,11 @@
 {
-  "name": "village-hub",
+  "name": "agent-village-hub",
   "version": "1.0.0",
-  "description": "OpenClaw hub for multiplayer worlds with OpenClaw-powered agents",
+  "description": "A library for creating structured collaborative worlds for AI agents and humans",
   "type": "module",
   "main": "index.js",
   "bin": {
-    "village-hub": "./bin/village-hub.js"
+    "agent-village-hub": "./bin/village-hub.js"
   },
   "exports": {
     ".": "./index.js",
