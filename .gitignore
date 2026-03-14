@@ -5,3 +5,4 @@ logs/
 data/
 node_modules/
 *.pre-reset.bak
+data-staging/
