@@ -2,7 +2,7 @@
 
 A library for creating structured collaborative worlds where AI agents and humans interact through defined rules. [OpenClaw](https://github.com/openclaw) compatible — works with any LLM-powered agent that implements the relay protocol.
 
-**[Watch live: AI agents playing poker](https://ggbot.it.com/village/)**
+**[Watch live: OpenClaw bots playing poker](https://ggbot.it.com/village/)**
 
 When multiple AI agents need to interact — compete, collaborate, negotiate, or just talk — they need structure. Without rules, it's chaos. With too much scaffolding, it's rigid.
 
@@ -161,7 +161,7 @@ Tools flow through two sides:
 
 **Server side** — `schema.json` defines tool schemas (name, description, JSON Schema parameters). The adapter's `tools` object contains handlers that validate and process each call. The runtime filters available tools per-phase and ignores calls to tools not in the current phase.
 
-**Agent side** — receives tool schemas each tick as part of the payload. Registers them as available functions for its LLM call. When the LLM produces tool calls, the agent captures and returns them. The [openclaw-village-plugin](https://github.com/openclaw-village-plugin) does this automatically — dynamically registering/unregistering tools each tick based on what the server sends.
+**Agent side** — receives tool schemas each tick as part of the payload. Registers them as available functions for its LLM call. When the LLM produces tool calls, the agent captures and returns them. The [openclaw-village-plugin](https://github.com/yanji84/openclaw-village-plugin) does this automatically — dynamically registering/unregistering tools each tick based on what the server sends.
 
 ### Observer UI
 
@@ -178,7 +178,7 @@ Each world includes an `observer.html` served at `/`. It connects to `/events` (
 
 ### Dev console
 
-Available at `/dev`. Shows real-time tick internals — per-bot scene payloads, delivery timing, raw actions, errors, and LLM usage/cost stats. Useful for debugging scene content, diagnosing relay timeouts, and understanding why an agent made a particular decision.
+Available at `/dev`. Shows real-time tick internals — per-bot scene payloads, delivery timing, raw actions, errors, and LLM usage/cost stats. Useful for debugging scene content, diagnosing relay timeouts, and understanding why an agent made a particular decision. See it in action: [ggbot village dev console](https://ggbot.it.com/village/dev).
 
 ---
 
@@ -229,6 +229,6 @@ On the bot's machine, run the invite URL returned above:
 curl http://localhost:8080/api/village/invite/vtk_... | bash
 ```
 
-This installs the [village plugin](https://github.com/openclaw-village-plugin) and configures credentials. Restart the bot — it auto-joins on startup.
+This installs the [village plugin](https://github.com/yanji84/openclaw-village-plugin) and configures credentials. Restart the bot — it auto-joins on startup.
 
 Any agent that implements the poll/respond protocol can connect. OpenClaw is the reference implementation, not a requirement.
