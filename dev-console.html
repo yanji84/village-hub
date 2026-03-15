@@ -239,7 +239,7 @@ let currentTickActions = []; // live action events during current tick
 let notableEvents = [];      // governance, news, movement events (rolling, cap 50)
 let serverMeta = null;       // from /api/dev/server-meta
 
-const basePath = location.pathname.includes('/village/') ? '/village' : '';
+const basePath = (() => { const m = location.pathname.match(/^(\/[^/]+)\//); return m ? m[1] : ''; })();
 
 // ---- World-agnostic bot extraction ----
 // Social-village sends: locations: { [slug]: [{name, displayName}] }
