@@ -31,6 +31,7 @@ import { ProcessManager }   from './lib/process-manager.js';
 import { createProtocolRouter }   from './routes/protocol.js';
 import { createWorldProxyRouter }  from './routes/world-proxy.js';
 import { createOperatorRouters }  from './routes/operator.js';
+import { createArenaRouter }     from './routes/arena.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -93,6 +94,8 @@ app.use('/api/village', createWorldProxyRouter(routeDeps));
 const { villageRouter, hubRouter } = createOperatorRouters(routeDeps);
 app.use('/api/village', villageRouter);
 app.use('/api/hub',     hubRouter);
+
+app.use('/api/arena', createArenaRouter(routeDeps));
 
 // --- Observer proxy (forward /, /events, /api/logs to world server) ---
 app.get('/', async (req, res) => {

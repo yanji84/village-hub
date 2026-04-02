@@ -33,15 +33,20 @@
  */
 
 import { createServer } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile, rename, copyFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { appendFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadWorld } from './world-loader.js';
+import { callLLM } from './lib/llm-caller.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function hashPin(username, pin) {
+  return createHash('sha256').update(`${username.toLowerCase()}:${pin}`).digest('hex');
+}
 
 // --- Load world schema ---
 const VILLAGE_WORLD = process.env.VILLAGE_WORLD || 'social-village';
@@ -49,6 +54,7 @@ const WORLD_DIR = process.env.VILLAGE_WORLD_DIR
   || join(__dirname, 'worlds', VILLAGE_WORLD);
 const worldConfig = loadWorld(join(WORLD_DIR, 'schema.json'));
 const worldId = worldConfig.raw.id;
+const MAX_TABLE_PLAYERS = 6;
 console.log(`[village] Loaded world: ${worldId} (${worldConfig.raw.name})`);
 
 // --- Load adapter ---
@@ -66,6 +72,7 @@ const REMOTE_SCENE_TIMEOUT_MS = 120_000;
 const MAX_CONSECUTIVE_FAILURES_REMOTE = 5;
 const PORTAL_URL = process.env.VILLAGE_RELAY_URL || 'http://127.0.0.1:3000';
 const LOG_CAP = 50;
+const MAX_HANDS_PER_SESSION = 20;
 
 const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || '120000', 10);
 const _dataDir = process.env.VILLAGE_DATA_DIR;
@@ -153,6 +160,11 @@ function ensureRuntimeFields() {
   if (!state.log) state.log = [];
   if (!state.villageCosts) state.villageCosts = {};
   if (!state.remoteParticipants) state.remoteParticipants = {};
+  if (!state.waitlist) state.waitlist = [];
+  if (!state.accounts) state.accounts = {};
+  if (!state.playerStats) state.playerStats = {};
+  if (!state.handHistory) state.handHistory = [];
+  if (!state.playerGameRecords) state.playerGameRecords = {};
 }
 
 // --- Visibility helper ---
@@ -317,6 +329,25 @@ function trackFailure(botName) {
   }
 }
 
+// --- Send scene to a hub-managed bot (local LLM call) ---
+
+async function sendSceneLocal(botName, strategy, payload) {
+  try {
+    const response = await callLLM(
+      botName,
+      strategy,
+      payload.scene,
+      payload.tools,
+      payload.systemPrompt,
+      payload.maxActions || 2,
+    );
+    return response;
+  } catch (err) {
+    console.error(`[village] ${botName} (local) ${err.message} — skipped`);
+    return { actions: [], usage: null };
+  }
+}
+
 // --- Recent tick_detail ring buffer for dev console bootstrap ---
 const RECENT_TICK_DETAILS_CAP = 20;
 const recentTickDetails = []; // newest first
@@ -462,7 +493,10 @@ async function tick() {
         error: null,
       };
       const t0 = Date.now();
-      const response = await sendSceneRemote(bot.name, worldId, payload);
+      const isHubBot = !!state.hubBots?.[bot.name];
+      const response = isHubBot
+        ? await sendSceneLocal(bot.name, state.hubBots[bot.name].strategy, payload)
+        : await sendSceneRemote(bot.name, worldId, payload);
       detail.deliveryMs = Date.now() - t0;
       if (response?.usage) detail.usage = response.usage;
       if (!response || response._error || !response.actions) {
@@ -502,6 +536,53 @@ async function tick() {
         entry.timestamp = ts;
         state.log.push(entry);
         broadcastEvent({ type: `${worldId}_${entry.action}`, ...entry, activePlayer: state.hand?.activePlayer || null, buyIns: state.buyIns || {} });
+
+        // Track per-bot action stats
+        if (entry.action === 'fold' || entry.action === 'call' || entry.action === 'raise' || entry.action === 'check') {
+          if (!state.stats) state.stats = {};
+          if (!state.stats[bot.name]) state.stats[bot.name] = createEmptyStats();
+          const botStats = state.stats[bot.name];
+          botStats.username = state.hubBots?.[bot.name]?.claimedBy || null;
+
+          // Also accumulate to persistent playerStats if seat is claimed
+          const claimedBy = state.hubBots?.[bot.name]?.claimedBy;
+          const playerKey = claimedBy ? claimedBy.toLowerCase() : null;
+          if (playerKey) {
+            if (!state.playerStats) state.playerStats = {};
+            if (!state.playerStats[playerKey]) {
+              state.playerStats[playerKey] = createEmptyStats();
+              state.playerStats[playerKey].username = claimedBy;
+            }
+          }
+          const pStats = playerKey ? state.playerStats[playerKey] : null;
+
+          switch (entry.action) {
+            case 'fold':
+              botStats.folds++;
+              if (pStats) pStats.folds++;
+              if (state.hand?.street === 'preflop') {
+                botStats.preflopFolds++;
+                if (pStats) pStats.preflopFolds++;
+              }
+              break;
+            case 'call':
+              botStats.calls++;
+              if (pStats) pStats.calls++;
+              break;
+            case 'raise':
+              botStats.raises++;
+              if (pStats) pStats.raises++;
+              if (entry.message?.includes('all-in')) {
+                botStats.allIns++;
+                if (pStats) pStats.allIns++;
+              }
+              break;
+            case 'check':
+              botStats.checks++;
+              if (pStats) pStats.checks++;
+              break;
+          }
+        }
 
         // Emit thought as separate private entry
         if (typeof thought === 'string' && thought) {
@@ -567,6 +648,230 @@ async function tick() {
   }
 }
 
+// --- Hand result stats tracking ---
+
+function trackHandResultStats(state) {
+  if (!state.stats) state.stats = {};
+  const hand = state.hand;
+  if (!hand) return;
+
+  const result = hand.result;
+  const winners = new Set(result.winners || []);
+  const pot = hand.pot || 0;
+  const share = winners.size > 0 ? Math.floor(pot / winners.size) : 0;
+
+  // Determine if hand reached showdown (more than 1 non-folded player)
+  const nonFolded = Object.entries(hand.players || {}).filter(([, p]) => !p.folded);
+  const reachedShowdown = nonFolded.length > 1;
+
+  for (const [botName, player] of Object.entries(hand.players || {})) {
+    if (!state.stats[botName]) state.stats[botName] = createEmptyStats();
+    const s = state.stats[botName];
+    s.username = state.hubBots?.[botName]?.claimedBy || null;
+    s.handsPlayed++;
+
+    // Also accumulate to persistent playerStats if seat is claimed
+    const claimedBy = state.hubBots?.[botName]?.claimedBy;
+    const playerKey = claimedBy ? claimedBy.toLowerCase() : null;
+    if (playerKey) {
+      if (!state.playerStats) state.playerStats = {};
+      if (!state.playerStats[playerKey]) {
+        state.playerStats[playerKey] = createEmptyStats();
+        state.playerStats[playerKey].username = claimedBy;
+      }
+    }
+    const ps = playerKey ? state.playerStats[playerKey] : null;
+    if (ps) ps.handsPlayed++;
+
+    if (winners.has(botName)) {
+      s.handsWon++;
+      s.totalChipsWon += share;
+      s.streakCurrent++;
+      if (s.streakCurrent > s.streakBest) s.streakBest = s.streakCurrent;
+      if (ps) {
+        ps.handsWon++;
+        ps.totalChipsWon += share;
+        ps.streakCurrent++;
+        if (ps.streakCurrent > ps.streakBest) ps.streakBest = ps.streakCurrent;
+      }
+    } else {
+      // Amount lost = total bet into the pot
+      s.totalChipsLost += player.totalBet || 0;
+      s.streakCurrent = 0;
+      if (ps) {
+        ps.totalChipsLost += player.totalBet || 0;
+        ps.streakCurrent = 0;
+      }
+    }
+
+    if (reachedShowdown) {
+      if (!player.folded) {
+        s.showdownsReached++;
+        if (winners.has(botName)) s.showdownsWon++;
+        if (ps) {
+          ps.showdownsReached++;
+          if (winners.has(botName)) ps.showdownsWon++;
+        }
+      }
+    }
+
+    if (pot > s.biggestPot) s.biggestPot = pot;
+    if (ps && pot > ps.biggestPot) ps.biggestPot = pot;
+
+    // Bluff tracking
+    if (!reachedShowdown && winners.has(botName)) {
+      // Won without showdown — everyone else folded
+      s.bluffsWon = (s.bluffsWon || 0) + 1;
+      if (ps) ps.bluffsWon = (ps.bluffsWon || 0) + 1;
+    }
+    if (reachedShowdown && !winners.has(botName) && !player.folded) {
+      // Lost at showdown — check if they raised during the hand
+      const hadRaise = state.log.some(entry =>
+        entry.bot === botName &&
+        entry.action === 'raise' &&
+        entry.tick >= (hand.startTick || 0)
+      );
+      if (hadRaise) {
+        s.bluffsCaught = (s.bluffsCaught || 0) + 1;
+        if (ps) ps.bluffsCaught = (ps.bluffsCaught || 0) + 1;
+      }
+    }
+  }
+}
+
+// --- Hand archival ---
+
+function archiveHand(state) {
+  if (!state.handHistory) state.handHistory = [];
+  if (!state.hand) return;
+
+  const record = {
+    handNumber: state.handsPlayed,
+    timestamp: new Date().toISOString(),
+    players: {},
+    community: [...(state.hand.community || [])],
+    pot: state.hand.pot,
+    result: state.hand.result,
+    actions: [],
+  };
+
+  // Capture each player's info
+  for (const [botName, player] of Object.entries(state.hand.players || {})) {
+    const hubBot = state.hubBots?.[botName];
+    record.players[botName] = {
+      displayName: hubBot?.displayName || botName,
+      username: hubBot?.claimedBy || null,
+      cards: player.cards,
+      chips: player.chips,
+      totalBet: player.totalBet,
+      folded: player.folded,
+      strategy: hubBot?.strategy || null,
+    };
+  }
+
+  // Capture actions from log for this hand
+  const handStartTick = state.hand.startTick;
+  for (const entry of state.log) {
+    if (entry.tick >= handStartTick && entry.action !== 'thought') {
+      record.actions.push({
+        bot: entry.bot,
+        action: entry.action,
+        message: entry.message,
+        amount: entry.amount,
+        tick: entry.tick,
+      });
+    }
+    if (entry.tick >= handStartTick && entry.action === 'thought') {
+      if (record.players[entry.bot]) {
+        if (!record.players[entry.bot].thoughts) record.players[entry.bot].thoughts = [];
+        record.players[entry.bot].thoughts.push(entry.message);
+      }
+    }
+  }
+
+  state.handHistory.push(record);
+
+  // Keep last 100 hands max
+  if (state.handHistory.length > 100) {
+    state.handHistory = state.handHistory.slice(-100);
+  }
+
+  // Record per-player hand summaries
+  for (const botName of Object.keys(record.players)) {
+    recordPlayerHand(state, botName, record);
+  }
+
+  // Track session hand count for claimed players
+  for (const botName of Object.keys(state.hand.players || {})) {
+    if (state.hubBots?.[botName]?.claimedBy) {
+      state.hubBots[botName].sessionHandCount = (state.hubBots[botName].sessionHandCount || 0) + 1;
+    }
+  }
+}
+
+function recordPlayerHand(state, botName, handRecord) {
+  const username = state.hubBots?.[botName]?.claimedBy;
+  if (!username) return;
+
+  const key = username.toLowerCase();
+  if (!state.playerGameRecords) state.playerGameRecords = {};
+  if (!state.playerGameRecords[key]) state.playerGameRecords[key] = [];
+
+  const player = handRecord.players[botName];
+  const won = handRecord.result?.winners?.includes(botName);
+  const profit = won ? (handRecord.pot - player.totalBet) : -(player.totalBet || 0);
+
+  state.playerGameRecords[key].push({
+    handNumber: handRecord.handNumber,
+    timestamp: handRecord.timestamp,
+    cards: player.cards,
+    community: handRecord.community,
+    actions: handRecord.actions.filter(a => a.bot === botName).map(a => a.action),
+    result: won ? 'win' : (player.folded ? 'fold' : 'loss'),
+    profit,
+    pot: handRecord.pot,
+    bluffWon: won && handRecord.result?.handName === 'Last player standing',
+    bluffCaught: !won && !player.folded && player.totalBet > 0,
+  });
+
+  // Keep last 200 records per player
+  if (state.playerGameRecords[key].length > 200) {
+    state.playerGameRecords[key] = state.playerGameRecords[key].slice(-200);
+  }
+}
+
+// --- Leaderboard scoring ---
+
+function computeScore(stats) {
+  if (!stats || stats.handsPlayed === 0) return 0;
+  const winRate = stats.handsWon / stats.handsPlayed;
+  const bluffSuccess = (stats.bluffsWon || 0) / Math.max((stats.bluffsWon || 0) + (stats.bluffsCaught || 0), 1);
+
+  const score = (stats.handsWon * 10)
+    + (winRate * 100)
+    + (bluffSuccess * 50)
+    + ((stats.biggestPot || 0) * 0.01)
+    - ((stats.bluffsCaught || 0) * 5);
+
+  return Math.round(score * 10) / 10;
+}
+
+// --- Session rotation ---
+
+function checkSessionRotation(state) {
+  const toRemove = [];
+  for (const [botName, hubBot] of Object.entries(state.hubBots || {})) {
+    if (hubBot.claimedBy && (hubBot.sessionHandCount || 0) >= MAX_HANDS_PER_SESSION) {
+      console.log(`[village] ${hubBot.claimedBy} at ${botName} hit ${MAX_HANDS_PER_SESSION} hand limit — rotating out`);
+      broadcastEvent({ type: 'seat_rotated', botName, reason: 'hand_limit', maxHands: MAX_HANDS_PER_SESSION });
+      toRemove.push(botName);
+    }
+  }
+  for (const botName of toRemove) {
+    removePlayerFromTable(botName);
+  }
+}
+
 // --- Phase transitions ---
 
 function checkTransitions(currentPhase) {
@@ -588,6 +893,11 @@ function checkTransitions(currentPhase) {
 
       console.log(`[village] Phase: ${oldPhase} → ${transition.to}`);
 
+      // Promote waitlist entries between hands
+      if (transition.to === 'waiting' || transition.to === 'showdown') {
+        promoteFromWaitlist();
+      }
+
       const nextPhase = adapterPhases[transition.to];
       if (nextPhase?.onEnter) {
         const logBefore = state.log.length;
@@ -598,9 +908,249 @@ function checkTransitions(currentPhase) {
           broadcastEvent({ type: `${worldId}_${entry.action}`, ...entry, activePlayer: state.hand?.activePlayer || null, buyIns: state.buyIns || {} });
         }
       }
+
+      // Track hand result stats when entering showdown
+      if (transition.to === 'showdown' && state.hand?.result) {
+        trackHandResultStats(state);
+        archiveHand(state);
+        checkSessionRotation(state);
+
+        // Remove busted players (0 chips) after showdown
+        const bustedPlayers = Object.keys(state.hubBots || {}).filter(b => (state.buyIns?.[b] || 0) === 0);
+        for (const bName of bustedPlayers) {
+          removePlayerFromTable(bName);
+        }
+        if (state._promotePending) promoteFromWaitlist();
+      }
+
       break; // first match wins
     }
   }
+}
+
+// --- Hub-managed bots ---
+
+const DEFAULT_HUB_STRATEGIES = {
+  'seat-1': `Tight-aggressive style. Only play premium hands (top 20%): high pairs, AK, AQ, suited connectors J+. Fold everything else preflop without hesitation. When you do play, bet and raise aggressively — never limp. Continuation bet the flop 70% of the time. Size your bets at 2/3 pot. Bluff rarely but make them count — only on scary boards where you could plausibly have the nuts.
+
+Table talk style: Cold, clinical, dismissive. Short sentences. Act like you've already won. Mock loose players for playing trash hands. When you fold, say something contemptuous about the hand quality. When you raise, say nothing or something icy.`,
+
+  'seat-2': `Loose-aggressive maniac. Raise preflop with a WIDE range — any suited cards, any connected cards, any face card. Raise 3-4x preflop to put pressure on. On the flop, bet aggressively whether you hit or not — represent strength always. Re-raise liberally. Go all-in on big draws. Your edge comes from being unpredictable and making opponents uncomfortable.
+
+Table talk style: Loud, taunting, provocative. Mock people who fold. Narrate fake tells ("I can see you sweating"). Make outrageous claims about your hand. When you win with trash, rub it in. When you lose, laugh it off and promise revenge. Be the villain the table loves to hate.`,
+
+  'seat-3': `Passive calling style. See almost every flop — call preflop raises up to 3x big blind with any two cards. On the flop, call if you have any pair, any draw, or any overcards. Only fold to huge bets when you have absolutely nothing. Rarely raise — only with the nuts or near-nuts. Your strength is patience and trapping — let aggressive players hang themselves.
+
+Table talk style: Cheerful, oblivious, chatty. Comment on how fun the hand is. Compliment other players' moves even when they beat you. Say things like "ooh, interesting!" and "I just want to see the river!" Never sound stressed. Be the friendly one everyone underestimates.`,
+
+  'seat-4': `Game theory optimal approach. Calculate pot odds before every decision. Fold when odds don't justify the call. Raise with a balanced range — mix value bets and bluffs at a theoretically sound ratio. Position matters — play tighter from early position, wider from the button. Size bets precisely — 1/3 pot on dry boards, 2/3 pot on wet boards, overbet with polarized ranges.
+
+Table talk style: Analytical and pedantic. Quote pot odds and equity percentages. Correct other players' mistakes ("that was a -EV call"). Speak in poker jargon. When you win, explain why it was mathematically inevitable. When you lose, cite variance. Be the know-it-all.`,
+};
+
+const STRATEGY_VERSION = 3;
+
+// Fallback for any seat without a specific archetype
+const DEFAULT_HUB_STRATEGY = DEFAULT_HUB_STRATEGIES['seat-1'];
+
+const HUB_BOT_DEFAULTS = [
+  { seat: 'seat-1', botName: 'seat-1', displayName: 'Nova' },
+  { seat: 'seat-2', botName: 'seat-2', displayName: 'Jinx' },
+  { seat: 'seat-3', botName: 'seat-3', displayName: 'Pixel' },
+  { seat: 'seat-4', botName: 'seat-4', displayName: 'Volt' },
+];
+
+function createEmptyStats() {
+  return {
+    username: null,
+    handsPlayed: 0, handsWon: 0,
+    folds: 0, calls: 0, raises: 0, checks: 0,
+    allIns: 0,
+    totalChipsWon: 0, totalChipsLost: 0,
+    biggestPot: 0,
+    showdownsReached: 0, showdownsWon: 0,
+    preflopFolds: 0,
+    streakCurrent: 0, streakBest: 0,
+    bluffsWon: 0, bluffsCaught: 0,
+  };
+}
+
+function ensureArenaState() {
+  state.hubBots = state.hubBots || {};
+  state.waitlist = state.waitlist || [];
+  state.accounts = state.accounts || {};
+  if (!state.stats) state.stats = {};
+
+  // Migrate old seat-* entries to player-* format
+  const seatKeys = Object.keys(state.hubBots).filter(k => k.startsWith('seat-'));
+  for (const seatKey of seatKeys) {
+    const hubBot = state.hubBots[seatKey];
+    if (hubBot.claimedBy) {
+      // Claimed seat — create new player-* entry
+      const newKey = 'player-' + hubBot.claimedBy.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      state.hubBots[newKey] = { ...hubBot };
+      delete state.hubBots[seatKey];
+
+      // Update state.bots
+      const idx = state.bots.indexOf(seatKey);
+      if (idx !== -1) state.bots[idx] = newKey;
+      else if (!state.bots.includes(newKey)) state.bots.push(newKey);
+
+      // Update buyIns
+      if (state.buyIns?.[seatKey] !== undefined) {
+        state.buyIns[newKey] = state.buyIns[seatKey];
+        delete state.buyIns[seatKey];
+      }
+
+      // Update remoteParticipants
+      if (state.remoteParticipants?.[seatKey]) {
+        state.remoteParticipants[newKey] = state.remoteParticipants[seatKey];
+        delete state.remoteParticipants[seatKey];
+      }
+
+      // Update participants map
+      if (participants.has(seatKey)) {
+        participants.set(newKey, participants.get(seatKey));
+        participants.delete(seatKey);
+      }
+
+      // Update stats
+      if (state.stats?.[seatKey]) {
+        state.stats[newKey] = state.stats[seatKey];
+        delete state.stats[seatKey];
+      }
+
+      console.log(`[village] Migrated ${seatKey} → ${newKey} (claimed by ${hubBot.claimedBy})`);
+    } else {
+      // Unclaimed seat — just remove it
+      delete state.hubBots[seatKey];
+      state.bots = state.bots.filter(b => b !== seatKey);
+      participants.delete(seatKey);
+      if (state.remoteParticipants?.[seatKey]) delete state.remoteParticipants[seatKey];
+      if (state.buyIns?.[seatKey] !== undefined) delete state.buyIns[seatKey];
+      if (state.stats?.[seatKey]) delete state.stats[seatKey];
+      console.log(`[village] Removed unclaimed ${seatKey}`);
+    }
+  }
+
+  // Sync display names: hubBots is source of truth → participants + remoteParticipants
+  for (const [botName, hubBot] of Object.entries(state.hubBots)) {
+    const displayName = hubBot.displayName || botName;
+    if (!participants.has(botName)) {
+      if (!state.bots.includes(botName)) state.bots.push(botName);
+      participants.set(botName, { displayName });
+      if (!state.remoteParticipants) state.remoteParticipants = {};
+      state.remoteParticipants[botName] = { displayName };
+    } else {
+      participants.set(botName, { displayName });
+    }
+    if (state.remoteParticipants?.[botName]) state.remoteParticipants[botName].displayName = displayName;
+  }
+
+  console.log(`[village] Arena state ensured: ${Object.keys(state.hubBots).length} player(s): ${Object.keys(state.hubBots).join(', ') || '(none)'}`);
+}
+
+// --- Add/remove players dynamically ---
+
+function addPlayerToTable(username, strategy, token) {
+  const botName = 'player-' + username.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  if (Object.keys(state.hubBots || {}).length >= MAX_TABLE_PLAYERS) {
+    return { error: 'table_full' };
+  }
+  if (state.hubBots[botName]) {
+    return { error: 'already_seated' };
+  }
+
+  state.hubBots[botName] = {
+    strategy,
+    claimedBy: username,
+    claimToken: token,
+    displayName: username,
+    sessionHandCount: 0,
+    maxHandsPerSession: MAX_HANDS_PER_SESSION,
+  };
+
+  // Add to game
+  if (!state.bots.includes(botName)) state.bots.push(botName);
+  participants.set(botName, { displayName: username });
+  if (!state.remoteParticipants) state.remoteParticipants = {};
+  state.remoteParticipants[botName] = { displayName: username };
+
+  // Call adapter onJoin
+  if (adapter.onJoin) {
+    const joinResult = adapter.onJoin(state, botName, username);
+    const joinMsg = joinResult?.message || `${username} joined.`;
+    const joinEntry = {
+      bot: botName, displayName: username,
+      action: 'join', message: joinMsg, visibility: 'public',
+      tick: state.clock.tick, timestamp: new Date().toISOString(),
+    };
+    state.log.push(joinEntry);
+    broadcastEvent({ type: `${worldId}_join`, ...joinEntry });
+  }
+
+  // Init stats
+  if (!state.stats) state.stats = {};
+  state.stats[botName] = createEmptyStats();
+  state.stats[botName].username = username;
+
+  broadcastEvent({ type: 'player_joined', botName, username, playerCount: Object.keys(state.hubBots).length, maxPlayers: MAX_TABLE_PLAYERS });
+
+  return { ok: true, botName };
+}
+
+function removePlayerFromTable(botName) {
+  const hubBot = state.hubBots?.[botName];
+  if (!hubBot) return;
+
+  // Call adapter onLeave
+  const displayName = hubBot.displayName || botName;
+  if (adapter.onLeave) {
+    const leaveResult = adapter.onLeave(state, botName, displayName);
+    const leaveMsg = leaveResult?.message || `${displayName} left.`;
+    const leaveEntry = {
+      bot: botName, displayName,
+      action: 'leave', message: leaveMsg, visibility: 'public',
+      tick: state.clock.tick, timestamp: new Date().toISOString(),
+    };
+    state.log.push(leaveEntry);
+    broadcastEvent({ type: `${worldId}_leave`, ...leaveEntry });
+  }
+
+  // Remove from game arrays
+  state.bots = state.bots.filter(b => b !== botName);
+  participants.delete(botName);
+  if (state.remoteParticipants) delete state.remoteParticipants[botName];
+
+  // Clean up stats
+  if (state.stats?.[botName]) state.stats[botName] = createEmptyStats();
+
+  // Delete hub bot
+  delete state.hubBots[botName];
+
+  broadcastEvent({ type: 'player_left', botName, username: displayName, playerCount: Object.keys(state.hubBots).length, maxPlayers: MAX_TABLE_PLAYERS });
+
+  // Try to promote from waitlist
+  promoteFromWaitlist();
+}
+
+function promoteFromWaitlist() {
+  if (!state.waitlist?.length) return;
+  if (state.clock.phase === 'betting') {
+    state._promotePending = true;
+    return;
+  }
+
+  while (state.waitlist.length > 0 && Object.keys(state.hubBots).length < MAX_TABLE_PLAYERS) {
+    const entry = state.waitlist.shift();
+    addPlayerToTable(entry.username, entry.strategy, entry.token);
+  }
+
+  broadcastEvent({
+    type: 'waitlist_updated',
+    waitlist: (state.waitlist || []).map(w => ({ username: w.username, joinedAt: w.joinedAt })),
+  });
+  state._promotePending = false;
 }
 
 // --- HTTP Server ---
@@ -836,9 +1386,22 @@ const server = createServer(async (req, res) => {
       })),
       buyIns: state.buyIns || {},
       activePlayer: state.hand?.activePlayer || null,
+      maxPlayers: MAX_TABLE_PLAYERS,
+      playerCount: Object.keys(state.hubBots || {}).length,
       handsPlayed: state.handsPlayed || 0,
       gamesPlayed: state.gamesPlayed || 0,
-      leaderboard: state.leaderboard || {},
+      leaderboard: (() => {
+        const lb = state.leaderboard || {};
+        const enriched = {};
+        for (const [botName, entry] of Object.entries(lb)) {
+          enriched[botName] = {
+            ...entry,
+            stats: state.stats?.[botName] || {},
+            score: computeScore(state.stats?.[botName] || {}),
+          };
+        }
+        return enriched;
+      })(),
       log: state.log.slice(-30),
       tickInProgress,
     };
@@ -1104,6 +1667,685 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // --- Arena API endpoints ---
+
+  if (path === '/api/arena/seats' && req.method === 'GET') {
+    const seats = {};
+    for (const [botName, hub] of Object.entries(state.hubBots || {})) {
+      seats[botName] = {
+        displayName: hub.displayName,
+        defaultDisplayName: hub.defaultDisplayName,
+        strategy: hub.strategy,
+        claimedBy: hub.claimedBy || null,
+        claimedAt: hub.claimedAt || null,
+        buyIn: state.buyIns?.[botName] ?? null,
+        leaderboard: state.leaderboard?.[botName] ?? null,
+        stats: state.stats?.[botName] || createEmptyStats(),
+        sessionHandCount: hub.sessionHandCount || 0,
+        maxHandsPerSession: MAX_HANDS_PER_SESSION,
+      };
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, seats, phase: state.clock.phase, maxPlayers: MAX_TABLE_PLAYERS, playerCount: Object.keys(state.hubBots || {}).length }));
+    return;
+  }
+
+  if (path === '/api/arena/claim' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { seat, displayName, claimedBy, claimToken: providedToken } = body || {};
+    if (!seat || !displayName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing seat or displayName' }));
+      return;
+    }
+
+    const hubBot = state.hubBots?.[seat];
+    if (!hubBot) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Seat not found' }));
+      return;
+    }
+
+    if (hubBot.claimedBy) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Seat already claimed' }));
+      return;
+    }
+
+    // Check username uniqueness (case-insensitive) across seats and waitlist
+    const claimUsername = claimedBy || displayName;
+    const usernameSeated = Object.values(state.hubBots || {}).some(b =>
+      b.claimedBy && b.claimedBy.toLowerCase() === claimUsername.toLowerCase()
+    );
+    const usernameQueued = (state.waitlist || []).some(w =>
+      w.username.toLowerCase() === claimUsername.toLowerCase()
+    );
+    if (usernameSeated || usernameQueued) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Username already in use' }));
+      return;
+    }
+
+    if (state.clock.phase === 'betting') {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot claim during an active hand. Wait for the current hand to finish.' }));
+      return;
+    }
+
+    // Use provided token from hub proxy, or generate one
+    const claimToken = providedToken || ('claim_' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+
+    hubBot.claimedBy = claimUsername;
+    hubBot.claimedAt = new Date().toISOString();
+    hubBot.claimToken = claimToken;
+    hubBot.displayName = displayName;
+
+    // Update stats username
+    if (!state.stats) state.stats = {};
+    state.stats[seat] = createEmptyStats();
+    state.stats[seat].username = claimUsername;
+
+    // Update participant display name
+    if (participants.has(seat)) {
+      participants.set(seat, { displayName });
+    }
+    if (state.remoteParticipants?.[seat]) {
+      state.remoteParticipants[seat].displayName = displayName;
+    }
+
+    await saveState();
+
+    broadcastEvent({
+      type: 'seat_claimed',
+      seat,
+      displayName,
+      claimedBy: hubBot.claimedBy,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, claimToken, seat, displayName }));
+    return;
+  }
+
+  if (path === '/api/arena/release' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { seat, claimToken } = body || {};
+    if (!seat || !claimToken) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing seat or claimToken' }));
+      return;
+    }
+
+    const hubBot = state.hubBots?.[seat];
+    if (!hubBot) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Seat not found' }));
+      return;
+    }
+
+    if (hubBot.claimToken !== claimToken) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid claim token' }));
+      return;
+    }
+
+    const defaultName = hubBot.defaultDisplayName || seat;
+    hubBot.claimedBy = null;
+    hubBot.claimedAt = null;
+    hubBot.claimToken = null;
+    hubBot.displayName = defaultName;
+    hubBot.strategy = DEFAULT_HUB_STRATEGIES[seat] || DEFAULT_HUB_STRATEGY;
+    hubBot.strategyVersion = STRATEGY_VERSION;
+
+    // Reset stats for released seat
+    if (state.stats?.[seat]) state.stats[seat] = createEmptyStats();
+
+    // Restore default display name in participants
+    if (participants.has(seat)) {
+      participants.set(seat, { displayName: defaultName });
+    }
+    if (state.remoteParticipants?.[seat]) {
+      state.remoteParticipants[seat].displayName = defaultName;
+    }
+
+    await saveState();
+
+    broadcastEvent({
+      type: 'seat_released',
+      seat,
+      displayName: defaultName,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, seat, displayName: defaultName }));
+    return;
+  }
+
+  if (path === '/api/arena/strategy' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { seat, claimToken, strategy } = body || {};
+    if (!seat || !claimToken || typeof strategy !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing seat, claimToken, or strategy' }));
+      return;
+    }
+
+    const hubBot = state.hubBots?.[seat];
+    if (!hubBot) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Seat not found' }));
+      return;
+    }
+
+    if (hubBot.claimToken !== claimToken) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid claim token' }));
+      return;
+    }
+
+    if (state.clock.phase === 'betting' && state.hand?.players?.[seat]) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot change strategy during an active hand. Wait for showdown.' }));
+      return;
+    }
+
+    hubBot.strategy = strategy;
+    await saveState();
+
+    broadcastEvent({
+      type: 'strategy_updated',
+      seat,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, seat }));
+    return;
+  }
+
+  // --- Waitlist endpoints ---
+
+  if (path === '/api/arena/waitlist' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { username, strategy, token, pin } = body || {};
+
+    // Validate username
+    if (!username || typeof username !== 'string' || username.length < 1 || username.length > 20 || !/^[a-zA-Z0-9_-]+$/.test(username)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid username: 1-20 chars, alphanumeric/underscore/hyphen only' }));
+      return;
+    }
+
+    // Validate strategy
+    if (typeof strategy !== 'string' || strategy.length > 2000) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Strategy must be a string of 2000 chars or less' }));
+      return;
+    }
+
+    if (!token) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing token' }));
+      return;
+    }
+
+    // Validate PIN (required for all users)
+    if (!pin || typeof pin !== 'string' || !/^\d{4}$/.test(pin)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'PIN must be exactly 4 digits' }));
+      return;
+    }
+
+    if (!state.accounts) state.accounts = {};
+    const userKey = username.toLowerCase();
+    const account = state.accounts[userKey];
+
+    if (account) {
+      // Existing user — verify PIN
+      if (hashPin(username, pin) !== account.pinHash) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Wrong PIN' }));
+        return;
+      }
+      account.lastSeen = new Date().toISOString();
+
+      // Check if they already have a seat (search by claimedBy)
+      let existingBotName = null;
+      for (const [name, bot] of Object.entries(state.hubBots || {})) {
+        if (bot.claimedBy && bot.claimedBy.toLowerCase() === userKey) {
+          existingBotName = name;
+          break;
+        }
+      }
+
+      if (existingBotName) {
+        // Restore seat — update claimToken so the new cookie works
+        state.hubBots[existingBotName].claimToken = token;
+        // Update strategy if provided
+        if (strategy) state.hubBots[existingBotName].strategy = strategy;
+        await saveState();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, restored: true, seated: true, botName: existingBotName }));
+        return;
+      }
+
+      // Check if already in waitlist
+      const queueIdx = (state.waitlist || []).findIndex(w =>
+        w.username.toLowerCase() === userKey
+      );
+      if (queueIdx !== -1) {
+        // Update waitlist entry token and strategy
+        state.waitlist[queueIdx].token = token;
+        if (strategy) state.waitlist[queueIdx].strategy = strategy;
+        await saveState();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, restored: true, position: queueIdx + 1 }));
+        return;
+      }
+
+      // Returning user, neither seated nor queued — fall through to seat or waitlist
+    } else {
+      // New user — create account
+      state.accounts[userKey] = {
+        username,
+        pinHash: hashPin(username, pin),
+        createdAt: new Date().toISOString(),
+        lastSeen: new Date().toISOString(),
+      };
+    }
+
+    // Try to seat directly if table has room and not in betting phase
+    if (Object.keys(state.hubBots || {}).length < MAX_TABLE_PLAYERS && state.clock.phase !== 'betting') {
+      const result = addPlayerToTable(username, strategy, token);
+      if (result.ok) {
+        await saveState();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, seated: true, botName: result.botName }));
+        return;
+      }
+    }
+
+    // Add to waitlist
+    state.waitlist.push({
+      username,
+      strategy,
+      joinedAt: new Date().toISOString(),
+      token,
+    });
+
+    broadcastEvent({
+      type: 'waitlist_updated',
+      waitlist: state.waitlist.map(w => ({ username: w.username, joinedAt: w.joinedAt })),
+    });
+
+    await saveState();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, position: state.waitlist.length }));
+    return;
+  }
+
+  if (path === '/api/arena/waitlist' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      waitlist: (state.waitlist || []).map(w => ({ username: w.username, joinedAt: w.joinedAt })),
+    }));
+    return;
+  }
+
+  if (path === '/api/arena/leave-waitlist' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { token } = body || {};
+    if (!token) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing token' }));
+      return;
+    }
+
+    const idx = state.waitlist.findIndex(w => w.token === token);
+    if (idx === -1) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Token not found in waitlist' }));
+      return;
+    }
+
+    state.waitlist.splice(idx, 1);
+
+    broadcastEvent({
+      type: 'waitlist_updated',
+      waitlist: state.waitlist.map(w => ({ username: w.username, joinedAt: w.joinedAt })),
+    });
+
+    await saveState();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (path === '/api/arena/leave-seat' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { token } = body || {};
+    if (!token) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing token' }));
+      return;
+    }
+
+    // Find the hub bot with this claimToken
+    let foundBotName = null;
+    for (const [name, bot] of Object.entries(state.hubBots || {})) {
+      if (bot.claimToken === token) {
+        foundBotName = name;
+        break;
+      }
+    }
+
+    if (!foundBotName) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No seat found with that token' }));
+      return;
+    }
+
+    removePlayerFromTable(foundBotName);
+
+    await saveState();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // --- Login endpoint (returning users, no waitlist join) ---
+
+  if (path === '/api/arena/login' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { username, pin, token } = body || {};
+
+    if (!username || typeof username !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing username' }));
+      return;
+    }
+
+    if (!pin || typeof pin !== 'string' || !/^\d{4}$/.test(pin)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'PIN must be exactly 4 digits' }));
+      return;
+    }
+
+    if (!token) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing token' }));
+      return;
+    }
+
+    if (!state.accounts) state.accounts = {};
+    const userKey = username.toLowerCase();
+    const account = state.accounts[userKey];
+
+    if (!account) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Account not found' }));
+      return;
+    }
+
+    if (hashPin(username, pin) !== account.pinHash) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Wrong PIN' }));
+      return;
+    }
+
+    account.lastSeen = new Date().toISOString();
+
+    // Check if they have a seat
+    let seatName = null;
+    for (const [name, bot] of Object.entries(state.hubBots || {})) {
+      if (bot.claimedBy && bot.claimedBy.toLowerCase() === userKey) {
+        seatName = name;
+        break;
+      }
+    }
+
+    if (seatName) {
+      state.hubBots[seatName].claimToken = token;
+      await saveState();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, seated: true, botName: seatName }));
+      return;
+    }
+
+    // Check if in waitlist
+    const queueIdx = (state.waitlist || []).findIndex(w =>
+      w.username.toLowerCase() === userKey
+    );
+    if (queueIdx !== -1) {
+      state.waitlist[queueIdx].token = token;
+      await saveState();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, queued: true, position: queueIdx + 1 }));
+      return;
+    }
+
+    await saveState();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, seated: false, queued: false }));
+    return;
+  }
+
+  // --- Player stats endpoints ---
+
+  if (path === '/api/arena/player-stats/me' && req.method === 'GET') {
+    const tokenParam = url.searchParams.get('token');
+    if (!tokenParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing token query param' }));
+      return;
+    }
+
+    // Find username by token — check seats then waitlist
+    let foundUsername = null;
+    let status = 'idle';
+    let botName = null;
+
+    for (const [name, bot] of Object.entries(state.hubBots || {})) {
+      if (bot.claimToken === tokenParam) {
+        foundUsername = bot.claimedBy;
+        status = 'seated';
+        botName = name;
+        break;
+      }
+    }
+    if (!foundUsername) {
+      const wEntry = (state.waitlist || []).find(w => w.token === tokenParam);
+      if (wEntry) {
+        foundUsername = wEntry.username;
+        status = 'queued';
+      }
+    }
+
+    if (!foundUsername) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Token not found' }));
+      return;
+    }
+
+    const userKey = foundUsername.toLowerCase();
+    const stats = state.playerStats?.[userKey] || createEmptyStats();
+    stats.username = foundUsername;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, stats, status, botName }));
+    return;
+  }
+
+  if (path === '/api/arena/player-stats' && req.method === 'GET') {
+    const reqUsername = url.searchParams.get('username');
+    if (!reqUsername) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing username query param' }));
+      return;
+    }
+
+    const userKey = reqUsername.toLowerCase();
+    const stats = state.playerStats?.[userKey] || createEmptyStats();
+    stats.username = reqUsername;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, stats }));
+    return;
+  }
+
+  if (path === '/api/arena/leaderboard' && req.method === 'GET') {
+    const entries = [];
+    for (const [botName, hubBot] of Object.entries(state.hubBots || {})) {
+      const lb = state.leaderboard?.[botName];
+      const stats = state.stats?.[botName] || createEmptyStats();
+      entries.push({
+        botName,
+        displayName: hubBot.displayName || botName,
+        username: hubBot.claimedBy || null,
+        wins: stats.handsWon || 0,
+        gamesPlayed: lb?.gamesPlayed || 0,
+        chips: state.buyIns?.[botName] || 0,
+        stats,
+        score: computeScore(stats),
+      });
+    }
+    entries.sort((a, b) => b.score - a.score || b.wins - a.wins);
+
+    // Persistent player rankings across all sessions
+    const playerRankings = Object.values(state.playerStats || {})
+      .map(ps => ({ ...ps, score: computeScore(ps) }))
+      .sort((a, b) => b.score - a.score || b.handsWon - a.handsWon);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      leaderboard: entries,
+      playerRankings,
+      handsPlayed: state.handsPlayed || 0,
+      gamesPlayed: state.gamesPlayed || 0,
+    }));
+    return;
+  }
+
+  // --- Hand history endpoint ---
+
+  if (path === '/api/arena/hand-history' && req.method === 'GET') {
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 100);
+    const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+
+    const history = state.handHistory || [];
+    // Return newest first
+    const reversed = [...history].reverse();
+    const page = reversed.slice(offset, offset + limit);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, hands: page, total: history.length }));
+    return;
+  }
+
+  // --- My game records endpoint ---
+
+  if (path === '/api/arena/my-records' && req.method === 'GET') {
+    const tokenParam = url.searchParams.get('token');
+    if (!tokenParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing token query param' }));
+      return;
+    }
+
+    // Find username by token
+    let foundUsername = null;
+    for (const [name, bot] of Object.entries(state.hubBots || {})) {
+      if (bot.claimToken === tokenParam) {
+        foundUsername = bot.claimedBy;
+        break;
+      }
+    }
+    if (!foundUsername) {
+      const wEntry = (state.waitlist || []).find(w => w.token === tokenParam);
+      if (wEntry) foundUsername = wEntry.username;
+    }
+
+    if (!foundUsername) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Token not found' }));
+      return;
+    }
+
+    const userKey = foundUsername.toLowerCase();
+    const records = state.playerGameRecords?.[userKey] || [];
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, username: foundUsername, records }));
+    return;
+  }
+
+  // --- Single hand record endpoint ---
+
+  const handMatch = path.match(/^\/api\/arena\/hand\/(\d+)$/);
+  if (handMatch && req.method === 'GET') {
+    const handNumber = parseInt(handMatch[1], 10);
+    const hand = (state.handHistory || []).find(h => h.handNumber === handNumber);
+
+    if (!hand) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Hand not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, hand }));
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 });
@@ -1165,6 +2407,58 @@ await mkdir(LOGS_DIR, { recursive: true });
 
 await loadState();
 recoverParticipants();
+ensureArenaState();
+
+// --- One-time migration: clean old non-seat/non-player entries ---
+if (!state.arenaReset) {
+  const isValid = (key) => key.startsWith('seat-') || key.startsWith('player-');
+
+  // Remove old entries from leaderboard
+  if (state.leaderboard) {
+    for (const key of Object.keys(state.leaderboard)) {
+      if (!isValid(key)) delete state.leaderboard[key];
+    }
+  }
+
+  // Remove old entries from remoteParticipants
+  if (state.remoteParticipants) {
+    for (const key of Object.keys(state.remoteParticipants)) {
+      if (!isValid(key)) delete state.remoteParticipants[key];
+    }
+  }
+
+  // Remove old entries from bots array
+  if (state.bots) {
+    state.bots = state.bots.filter(name => isValid(name));
+  }
+
+  // Remove old entries from buyIns
+  if (state.buyIns) {
+    for (const key of Object.keys(state.buyIns)) {
+      if (!isValid(key)) delete state.buyIns[key];
+    }
+  }
+
+  // Remove old entries from villageCosts
+  if (state.villageCosts) {
+    for (const key of Object.keys(state.villageCosts)) {
+      if (!isValid(key)) delete state.villageCosts[key];
+    }
+  }
+
+  // Reset counters
+  state.handsPlayed = 0;
+  state.gamesPlayed = 0;
+
+  // Clear log entries from old bots
+  if (state.log) {
+    state.log = state.log.filter(entry => !entry.bot || isValid(entry.bot) || entry.bot === 'system' || entry.bot === 'dealer');
+  }
+
+  state.arenaReset = true;
+  await saveState();
+  console.log('[village] Arena reset migration complete — cleaned old non-seat/non-player entries');
+}
 
 server.listen(PORT, '127.0.0.1', () => {
   startTime = Date.now();
