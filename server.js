@@ -1863,12 +1863,6 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (state.clock.phase === 'betting' && state.hand?.players?.[seat]) {
-      res.writeHead(409, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot change strategy during an active hand. Wait for showdown.' }));
-      return;
-    }
-
     hubBot.strategy = strategy;
     await saveState();
 
