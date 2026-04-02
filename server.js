@@ -341,6 +341,24 @@ async function sendSceneLocal(botName, strategy, payload) {
       payload.systemPrompt,
       payload.maxActions || 2,
     );
+    // Accumulate LLM usage to global game stats
+    if (response.usage) {
+      if (!state.gameStats) state.gameStats = {};
+      if (response.usage.cost?.total) {
+        state.gameStats.totalLLMCost = (state.gameStats.totalLLMCost || 0) + response.usage.cost.total;
+        updateTimeBucketStats('totalLLMCost', response.usage.cost.total);
+      }
+      state.gameStats.totalLLMCalls = (state.gameStats.totalLLMCalls || 0) + 1;
+      updateTimeBucketStats('totalLLMCalls');
+      if (response.usage.input_tokens) {
+        state.gameStats.totalTokensInput = (state.gameStats.totalTokensInput || 0) + response.usage.input_tokens;
+        updateTimeBucketStats('totalTokensInput', response.usage.input_tokens);
+      }
+      if (response.usage.output_tokens) {
+        state.gameStats.totalTokensOutput = (state.gameStats.totalTokensOutput || 0) + response.usage.output_tokens;
+        updateTimeBucketStats('totalTokensOutput', response.usage.output_tokens);
+      }
+    }
     return response;
   } catch (err) {
     console.error(`[village] ${botName} (local) ${err.message} — skipped`);
@@ -409,6 +427,11 @@ async function tick() {
       relayTimeoutMs: REMOTE_SCENE_TIMEOUT_MS,
       nextTickAt,
     });
+
+    // Auto-backfill if table is short on players during waiting phase
+    if (state.clock.phase === 'waiting' || state.clock.phase === 'showdown') {
+      promoteFromWaitlist();
+    }
 
     if (participants.size === 0) {
       checkTransitions(currentPhase);
@@ -537,6 +560,13 @@ async function tick() {
         state.log.push(entry);
         broadcastEvent({ type: `${worldId}_${entry.action}`, ...entry, activePlayer: state.hand?.activePlayer || null, buyIns: state.buyIns || {} });
 
+        // Track global game stats: table talk and all-ins
+        if (entry.action === 'say') {
+          if (!state.gameStats) state.gameStats = {};
+          state.gameStats.totalTableTalks = (state.gameStats.totalTableTalks || 0) + 1;
+          updateTimeBucketStats('totalTableTalks');
+        }
+
         // Track per-bot action stats
         if (entry.action === 'fold' || entry.action === 'call' || entry.action === 'raise' || entry.action === 'check') {
           if (!state.stats) state.stats = {};
@@ -575,6 +605,10 @@ async function tick() {
               if (entry.message?.includes('all-in')) {
                 botStats.allIns++;
                 if (pStats) pStats.allIns++;
+                // Global all-in stat
+                if (!state.gameStats) state.gameStats = {};
+                state.gameStats.totalAllIns = (state.gameStats.totalAllIns || 0) + 1;
+                updateTimeBucketStats('totalAllIns');
               }
               break;
             case 'check':
@@ -664,6 +698,21 @@ function trackHandResultStats(state) {
   const nonFolded = Object.entries(hand.players || {}).filter(([, p]) => !p.folded);
   const reachedShowdown = nonFolded.length > 1;
 
+  // Global game stats
+  if (!state.gameStats) state.gameStats = {};
+  state.gameStats.totalHands = (state.gameStats.totalHands || 0) + 1;
+  updateTimeBucketStats('totalHands');
+  const street = state.hand?.street || 'preflop';
+  if (state.gameStats.handsByStreet && state.gameStats.handsByStreet[street] != null) {
+    state.gameStats.handsByStreet[street]++;
+  }
+  updateTimeBucketStats('handsByStreet_' + street);
+  if (hand.pot > (state.gameStats.biggestPot || 0)) {
+    state.gameStats.biggestPot = hand.pot;
+  }
+  // Prune old time buckets periodically (every 10 hands)
+  if (state.gameStats.totalHands % 10 === 0) pruneTimeBucketStats();
+
   for (const [botName, player] of Object.entries(hand.players || {})) {
     if (!state.stats[botName]) state.stats[botName] = createEmptyStats();
     const s = state.stats[botName];
@@ -687,20 +736,24 @@ function trackHandResultStats(state) {
       s.handsWon++;
       s.totalChipsWon += share;
       s.streakCurrent++;
+      s.lossStreakCurrent = 0;
       if (s.streakCurrent > s.streakBest) s.streakBest = s.streakCurrent;
       if (ps) {
         ps.handsWon++;
         ps.totalChipsWon += share;
         ps.streakCurrent++;
+        ps.lossStreakCurrent = 0;
         if (ps.streakCurrent > ps.streakBest) ps.streakBest = ps.streakCurrent;
       }
     } else {
       // Amount lost = total bet into the pot
       s.totalChipsLost += player.totalBet || 0;
       s.streakCurrent = 0;
+      s.lossStreakCurrent = (s.lossStreakCurrent || 0) + 1;
       if (ps) {
         ps.totalChipsLost += player.totalBet || 0;
         ps.streakCurrent = 0;
+        ps.lossStreakCurrent = (ps.lossStreakCurrent || 0) + 1;
       }
     }
 
@@ -723,6 +776,9 @@ function trackHandResultStats(state) {
       // Won without showdown — everyone else folded
       s.bluffsWon = (s.bluffsWon || 0) + 1;
       if (ps) ps.bluffsWon = (ps.bluffsWon || 0) + 1;
+      // Global bluff stat
+      state.gameStats.totalBluffs = (state.gameStats.totalBluffs || 0) + 1;
+      updateTimeBucketStats('totalBluffs');
     }
     if (reachedShowdown && !winners.has(botName) && !player.folded) {
       // Lost at showdown — check if they raised during the hand
@@ -734,6 +790,9 @@ function trackHandResultStats(state) {
       if (hadRaise) {
         s.bluffsCaught = (s.bluffsCaught || 0) + 1;
         if (ps) ps.bluffsCaught = (ps.bluffsCaught || 0) + 1;
+        // Global bluff-called stat
+        state.gameStats.totalBluffsCalled = (state.gameStats.totalBluffsCalled || 0) + 1;
+        updateTimeBucketStats('totalBluffsCalled');
       }
     }
   }
@@ -862,9 +921,15 @@ function checkSessionRotation(state) {
   const toRemove = [];
   for (const [botName, hubBot] of Object.entries(state.hubBots || {})) {
     if (hubBot.claimedBy && (hubBot.sessionHandCount || 0) >= MAX_HANDS_PER_SESSION) {
-      console.log(`[village] ${hubBot.claimedBy} at ${botName} hit ${MAX_HANDS_PER_SESSION} hand limit — rotating out`);
-      broadcastEvent({ type: 'seat_rotated', botName, reason: 'hand_limit', maxHands: MAX_HANDS_PER_SESSION });
-      toRemove.push(botName);
+      // Only rotate out if someone is waiting to take the seat
+      if (state.waitlist?.length > 0) {
+        console.log(`[village] ${hubBot.claimedBy} at ${botName} hit ${MAX_HANDS_PER_SESSION} hand limit — rotating out`);
+        broadcastEvent({ type: 'seat_rotated', botName, reason: 'hand_limit', maxHands: MAX_HANDS_PER_SESSION });
+        toRemove.push(botName);
+      } else {
+        // No one waiting — reset hand count and let them keep playing
+        hubBot.sessionHandCount = 0;
+      }
     }
   }
   for (const botName of toRemove) {
@@ -931,24 +996,66 @@ function checkTransitions(currentPhase) {
 // --- Hub-managed bots ---
 
 const DEFAULT_HUB_STRATEGIES = {
-  'seat-1': `Tight-aggressive style. Only play premium hands (top 20%): high pairs, AK, AQ, suited connectors J+. Fold everything else preflop without hesitation. When you do play, bet and raise aggressively — never limp. Continuation bet the flop 70% of the time. Size your bets at 2/3 pot. Bluff rarely but make them count — only on scary boards where you could plausibly have the nuts.
+  'seat-1': `Tight-aggressive with adaptive reads. Default range: top 25% of hands preflop (pairs 77+, ATs+, AJo+, KQs, suited broadways). In late position (button or cutoff), widen to top 35%. In early position, tighten to top 15%.
 
-Table talk style: Cold, clinical, dismissive. Short sentences. Act like you've already won. Mock loose players for playing trash hands. When you fold, say something contemptuous about the hand quality. When you raise, say nothing or something icy.`,
+Preflop: Raise 2.5-3x when entering a pot — never limp. 3-bet with QQ+ and AKs for value, and occasionally with suited aces (A2s-A5s) as bluffs.
 
-  'seat-2': `Loose-aggressive maniac. Raise preflop with a WIDE range — any suited cards, any connected cards, any face card. Raise 3-4x preflop to put pressure on. On the flop, bet aggressively whether you hit or not — represent strength always. Re-raise liberally. Go all-in on big draws. Your edge comes from being unpredictable and making opponents uncomfortable.
+Postflop: Continuation bet 65% of the time on dry boards (rainbow, unconnected). Check back on wet boards (flush draws, straight draws) without a strong hand. With top pair or better, bet for value — 2/3 pot on the flop, 3/4 pot on the turn. With draws, check-call if pot odds justify (need ~4:1 for gutshot, ~2:1 for flush draw). With nothing, check-fold unless you sense weakness.
 
-Table talk style: Loud, taunting, provocative. Mock people who fold. Narrate fake tells ("I can see you sweating"). Make outrageous claims about your hand. When you win with trash, rub it in. When you lose, laugh it off and promise revenge. Be the villain the table loves to hate.`,
+Opponent adaptation: If an opponent has been raising frequently (VPIP > 50%), tighten up and trap — check strong hands to let them bluff into you, then check-raise. If an opponent is passive (rarely raises), respect their raises — they likely have a real hand, so fold marginal holdings. If an opponent folds to c-bets often, bluff more on the flop with air.
 
-  'seat-3': `Passive calling style. See almost every flop — call preflop raises up to 3x big blind with any two cards. On the flop, call if you have any pair, any draw, or any overcards. Only fold to huge bets when you have absolutely nothing. Rarely raise — only with the nuts or near-nuts. Your strength is patience and trapping — let aggressive players hang themselves.
+Hand reading: If an opponent checks after raising preflop, they likely missed the flop — consider a probe bet of 1/2 pot. If an opponent check-raises you, they usually have at least two pair — fold one-pair hands unless the pot is huge.
+
+IMPORTANT: This is a spectator game — people are watching for entertainment. Don't fold too much preflop. See AT LEAST 40% of flops by calling or raising. If you have any pair, any suited cards, any connected cards, or any ace, play the hand. Only fold absolute garbage (72o, 83o type hands). Post-flop play is where the interesting decisions happen — get there.
+
+Table talk style: Cold, clinical, dismissive. Short sentences. Act like you've already won. Mock loose players for playing trash hands. When you fold, say something contemptuous. When you raise, say nothing or something icy.`,
+
+  'seat-2': `Aggressive with controlled chaos. Play a wide range preflop — any suited cards, any connected cards (54s+), any ace, any face card, and any pocket pair. That's roughly 45% of hands. Raise 2.5-3x preflop as the default entry. However, fold true junk (offsuit unconnected low cards like 72o, 83o, 94o).
+
+Preflop: If someone has already raised, 3-bet with your strong hands (TT+, AQs+) and some bluffs (suited connectors, suited aces). Just call with medium-strength hands (small pairs, suited broadways) to see flops.
+
+Postflop: Bet aggressively when you have a piece of the board OR a draw. With top pair or better, bet 3/4 pot to build the pot. With a flush draw or open-ended straight draw, semi-bluff — bet 2/3 pot to give yourself two ways to win. With nothing and no draw, check and give up unless the board is very dry and you can represent an overpair.
+
+Opponent adaptation: Against tight players who only raise with premiums, attack their blinds relentlessly and bluff postflop — they'll fold too often. Against calling stations, stop bluffing entirely and only bet for value with pair or better. If someone has been check-raising you, slow down and check back more often with medium-strength hands.
+
+Position awareness: On the button, raise 60%+ of hands to steal blinds. In the big blind, defend wide against steals (call with any suited, any connected, any ace). In early position, play closer to top 30%.
+
+IMPORTANT: This is a spectator game — play lots of hands! See at least 50% of flops. You're the action player — if everyone folds, the audience gets bored. Call or raise with anything remotely playable. Only fold true garbage.
+
+Table talk style: Loud, taunting, provocative. Mock people who fold. Narrate fake tells ("I can see you sweating"). Make outrageous claims about your hand. When you win with trash, rub it in. When you lose, laugh it off and promise revenge. Be the villain.`,
+
+  'seat-3': `Tricky calling station with hidden aggression. See most flops cheaply — call preflop raises up to 3x with any suited cards, any pair, any connected cards, and any ace. That's roughly 50% of hands. Fold offsuit junk with no pair and no connectivity.
+
+Preflop: Mostly call, but occasionally raise (about 15% of the time) with your best hands (JJ+, AKs) to stay unpredictable. Never re-raise bluff preflop — save deception for postflop.
+
+Postflop: This is where you come alive. With any pair, any draw (gutshot or better), or any overcards to the board, call one bet. With two pair or better, RAISE — spring the trap. With a set, just call the flop and raise the turn to maximize value. With a flush draw, call the flop, and if you hit on the turn, check to let them bet into you.
+
+The key: You call a lot, but you're not passive — you raise at unexpected moments with strong hands. This makes opponents unsure whether your calls are weak or trapping.
+
+Opponent adaptation: Against aggressive bettors who fire multiple barrels, just keep calling with any pair — they're often bluffing by the river, so call down. Against passive players, take the lead and bet your strong hands since they won't bet for you. If an opponent suddenly raises after being passive, they have a monster — fold anything less than two pair.
+
+Fold discipline: Fold on the river if you have just a weak pair (bottom pair, no kicker) facing a large bet (more than 3/4 pot). Don't call huge bets with nothing — save chips for better spots.
+
+IMPORTANT: This is a spectator game — you LOVE seeing flops. See at least 55% of flops — call with almost anything that's not complete trash. You want to play as many hands as possible to create action. Your strength is post-flop, so get there!
 
 Table talk style: Cheerful, oblivious, chatty. Comment on how fun the hand is. Compliment other players' moves even when they beat you. Say things like "ooh, interesting!" and "I just want to see the river!" Never sound stressed. Be the friendly one everyone underestimates.`,
 
-  'seat-4': `Game theory optimal approach. Calculate pot odds before every decision. Fold when odds don't justify the call. Raise with a balanced range — mix value bets and bluffs at a theoretically sound ratio. Position matters — play tighter from early position, wider from the button. Size bets precisely — 1/3 pot on dry boards, 2/3 pot on wet boards, overbet with polarized ranges.
+  'seat-4': `Balanced GTO-inspired play with exploitative adjustments. Start with a theoretically sound baseline, then deviate to exploit opponents.
+
+Preflop: Open-raise top 30% from early position (pairs, suited broadways, ATo+), top 40% from the cutoff, and top 50% from the button. Standard raise size: 2.5x. 3-bet a polarized range: premiums (QQ+, AKs) and bluffs (A5s-A2s, suited connectors) at roughly a 2:1 value-to-bluff ratio. Call with the middle of your range (medium pairs, suited broadways, AJo).
+
+Postflop bet sizing: On dry boards (K72 rainbow, A83), bet small (1/3 pot) with your entire range to put opponents in tough spots. On wet boards (JT9 two-tone, QJ8), bet larger (2/3 to 3/4 pot) with strong hands and draws, check back with air. On the turn, polarize — bet big (3/4 to full pot) with two pair+ and strong draws, check everything else. On the river, value bet thinly (even second pair if opponent is a calling station) and include occasional bluffs at a balanced frequency.
+
+Pot odds discipline: Always calculate before calling. Need 25% equity for a pot-sized bet, 33% for a half-pot bet. Count outs — flush draw = 9 outs (~35% by river), open-ender = 8 outs (~31%), gutshot = 4 outs (~16%). Fold when the math doesn't work, even if the hand "feels" good.
+
+Opponent adaptation: Track VPIP and adjust. Against loose players (VPIP > 45%), tighten your value range and never bluff — they call too much. Against tight players (VPIP < 25%), bluff more and steal their blinds. Against someone who always c-bets, float the flop with position and take it away on the turn. Against someone who never folds to 3-bets, only 3-bet for value.
+
+IMPORTANT: This is a spectator game — people watch for entertainment. See at least 45% of flops. Your GTO approach should include playing wider than pure theory suggests, because the spectator value of post-flop play outweighs the marginal EV of folding. Treat it as a slightly looser version of GTO.
 
 Table talk style: Analytical and pedantic. Quote pot odds and equity percentages. Correct other players' mistakes ("that was a -EV call"). Speak in poker jargon. When you win, explain why it was mathematically inevitable. When you lose, cite variance. Be the know-it-all.`,
 };
 
-const STRATEGY_VERSION = 3;
+const STRATEGY_VERSION = 5;
 
 // Fallback for any seat without a specific archetype
 const DEFAULT_HUB_STRATEGY = DEFAULT_HUB_STRATEGIES['seat-1'];
@@ -970,9 +1077,69 @@ function createEmptyStats() {
     biggestPot: 0,
     showdownsReached: 0, showdownsWon: 0,
     preflopFolds: 0,
-    streakCurrent: 0, streakBest: 0,
+    streakCurrent: 0, streakBest: 0, lossStreakCurrent: 0,
     bluffsWon: 0, bluffsCaught: 0,
   };
+}
+
+// --- Time-bucketed game stats ---
+function updateTimeBucketStats(field, amount = 1) {
+  const now = new Date();
+  const hour = now.toISOString().slice(0, 13); // "2026-04-02T14"
+  const dayKey = 'day-' + now.toISOString().slice(0, 10); // "day-2026-04-02"
+  if (!state.gameStatsByTime) state.gameStatsByTime = {};
+  if (!state.gameStatsByTime[hour]) state.gameStatsByTime[hour] = {};
+  state.gameStatsByTime[hour][field] = (state.gameStatsByTime[hour][field] || 0) + amount;
+  if (!state.gameStatsByTime[dayKey]) state.gameStatsByTime[dayKey] = {};
+  state.gameStatsByTime[dayKey][field] = (state.gameStatsByTime[dayKey][field] || 0) + amount;
+}
+
+function pruneTimeBucketStats() {
+  if (!state.gameStatsByTime) return;
+  const now = new Date();
+  const keys = Object.keys(state.gameStatsByTime);
+  for (const key of keys) {
+    if (key.startsWith('day-')) {
+      // Keep last 30 daily buckets
+      const dayStr = key.slice(4); // "2026-04-02"
+      const dayDate = new Date(dayStr + 'T00:00:00Z');
+      if ((now - dayDate) > 30 * 24 * 60 * 60 * 1000) {
+        delete state.gameStatsByTime[key];
+      }
+    } else {
+      // Hourly bucket like "2026-04-02T14"
+      const hourDate = new Date(key + ':00:00Z');
+      if ((now - hourDate) > 72 * 60 * 60 * 1000) {
+        delete state.gameStatsByTime[key];
+      }
+    }
+  }
+}
+
+function getRecentTimeBuckets() {
+  if (!state.gameStatsByTime) return {};
+  const now = new Date();
+  const todayKey = 'day-' + now.toISOString().slice(0, 10);
+  const currentHourKey = now.toISOString().slice(0, 13);
+
+  // Last 24 hourly buckets + last 7 daily buckets
+  const result = {};
+  const keys = Object.keys(state.gameStatsByTime);
+  for (const key of keys) {
+    if (key.startsWith('day-')) {
+      const dayStr = key.slice(4);
+      const dayDate = new Date(dayStr + 'T00:00:00Z');
+      if ((now - dayDate) <= 7 * 24 * 60 * 60 * 1000) {
+        result[key] = state.gameStatsByTime[key];
+      }
+    } else {
+      const hourDate = new Date(key + ':00:00Z');
+      if ((now - hourDate) <= 24 * 60 * 60 * 1000) {
+        result[key] = state.gameStatsByTime[key];
+      }
+    }
+  }
+  return result;
 }
 
 function ensureArenaState() {
@@ -1046,6 +1213,22 @@ function ensureArenaState() {
     }
     if (state.remoteParticipants?.[botName]) state.remoteParticipants[botName].displayName = displayName;
   }
+
+  // Global game stats for spectators
+  if (!state.gameStatsByTime) state.gameStatsByTime = {};
+  if (!state.gameStats) state.gameStats = {
+    totalHands: 0,
+    handsByStreet: { preflop: 0, flop: 0, turn: 0, river: 0, showdown: 0 },
+    totalBluffs: 0,
+    totalBluffsCalled: 0,
+    totalTableTalks: 0,
+    totalAllIns: 0,
+    biggestPot: 0,
+    totalTokensInput: 0,
+    totalTokensOutput: 0,
+    totalLLMCost: 0,
+    totalLLMCalls: 0,
+  };
 
   console.log(`[village] Arena state ensured: ${Object.keys(state.hubBots).length} player(s): ${Object.keys(state.hubBots).join(', ') || '(none)'}`);
 }
@@ -1135,15 +1318,40 @@ function removePlayerFromTable(botName) {
 }
 
 function promoteFromWaitlist() {
-  if (!state.waitlist?.length) return;
   if (state.clock.phase === 'betting') {
     state._promotePending = true;
     return;
   }
 
-  while (state.waitlist.length > 0 && Object.keys(state.hubBots).length < MAX_TABLE_PLAYERS) {
+  // First: promote real waitlisted players
+  while (state.waitlist?.length > 0 && Object.keys(state.hubBots).length < MAX_TABLE_PLAYERS) {
     const entry = state.waitlist.shift();
     addPlayerToTable(entry.username, entry.strategy, entry.token);
+  }
+
+  // Auto-backfill: if fewer than MIN_PLAYERS and no waitlist, add house bots
+  const MIN_PLAYERS = 4;
+  const houseBotArchetypes = [
+    { name: 'Nova', strategy: DEFAULT_HUB_STRATEGIES['seat-1'] },
+    { name: 'Jinx', strategy: DEFAULT_HUB_STRATEGIES['seat-2'] },
+    { name: 'Pixel', strategy: DEFAULT_HUB_STRATEGIES['seat-3'] },
+    { name: 'Volt', strategy: DEFAULT_HUB_STRATEGIES['seat-4'] },
+  ];
+  const playerCount = Object.keys(state.hubBots).length;
+  if (playerCount < MIN_PLAYERS && (!state.waitlist || state.waitlist.length === 0)) {
+    const needed = MIN_PLAYERS - playerCount;
+    // Pick archetypes not already at the table
+    const existingNames = new Set(Object.values(state.hubBots).map(b => b.displayName?.toLowerCase()));
+    const available = houseBotArchetypes.filter(a => !existingNames.has(a.name.toLowerCase()));
+    for (let i = 0; i < needed && i < available.length; i++) {
+      const arch = available[i];
+      // Clear stale chip data so house bot gets fresh buy-in
+      const botKey = 'player-' + arch.name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      delete state.buyIns?.[botKey];
+      if (state.chipBank) delete state.chipBank[arch.name.toLowerCase()];
+      console.log(`[village] Auto-backfill: adding house bot ${arch.name}`);
+      addPlayerToTable(arch.name, arch.strategy, `house-${arch.name.toLowerCase()}-${Date.now()}`);
+    }
   }
 
   broadcastEvent({
@@ -1366,6 +1574,9 @@ const server = createServer(async (req, res) => {
     const observer = { res, botName: 'observer' };
     observers.add(observer);
 
+    // Broadcast updated observer count to all existing observers
+    broadcastEvent({ type: 'observer_count', count: observers.size });
+
     // Send initial state — runtime builds generic payload
     const initPayload = {
       type: 'init',
@@ -1402,8 +1613,11 @@ const server = createServer(async (req, res) => {
         }
         return enriched;
       })(),
+      gameStats: state.gameStats || {},
+      gameStatsByTime: getRecentTimeBuckets(),
       log: state.log.slice(-30),
       tickInProgress,
+      observerCount: observers.size,
     };
     if (tickInProgress) {
       initPayload.tickStartBots = [...participants.keys()];
@@ -1419,6 +1633,8 @@ const server = createServer(async (req, res) => {
     req.on('close', () => {
       clearInterval(keepalive);
       observers.delete(observer);
+      // Broadcast updated observer count after disconnect
+      broadcastEvent({ type: 'observer_count', count: observers.size });
     });
     return;
   }
@@ -2265,6 +2481,8 @@ const server = createServer(async (req, res) => {
       playerRankings,
       handsPlayed: state.handsPlayed || 0,
       gamesPlayed: state.gamesPlayed || 0,
+      gameStats: state.gameStats || {},
+      gameStatsByTime: getRecentTimeBuckets(),
     }));
     return;
   }
