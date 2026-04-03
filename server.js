@@ -1150,92 +1150,267 @@ function checkTransitions(currentPhase) {
 
 // --- Hub-managed bots ---
 
+const BOT_POOL = [
+  {
+    name: 'Ace',
+    strategy: `Tight-aggressive. Play top 20% of hands. Raise 3x preflop with premiums, fold everything else. C-bet 2/3 pot on dry flops, shut down on wet boards without a strong hand. Fold to check-raises without two pair+.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 35% of flops for spectator entertainment.
+Table talk: Cold and calculating. Short sentences. "The math says fold."`,
+  },
+  {
+    name: 'Blaze',
+    strategy: `Hyper-aggressive maniac. Play 70%+ of hands. Raise or 3-bet preflop almost always — never limp, never just call. Fire triple barrels with air. Overbet the pot on scary cards to pressure opponents into folding.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 60% of flops for spectator entertainment.
+Table talk: Loud trash talker. "You don't have the guts to call." Taunts after every pot.`,
+  },
+  {
+    name: 'Shadow',
+    strategy: `Tricky slow-player. Play about 35% of hands. When you hit big (two pair+, sets), check to let opponents bet, then check-raise. With monsters, just call to keep them in. Only bet aggressively with draws as semi-bluffs.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Silent and mysterious. Rarely speaks. When you do, it's one cryptic word. "Interesting."`,
+  },
+  {
+    name: 'Viper',
+    strategy: `Loose-aggressive with position awareness. Play 50% of hands, but raise almost every time you enter. On the button, raise 70%. Bluff aggressively in position, but play straightforward out of position. Attack weakness — if they check, you bet.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 50% of flops for spectator entertainment.
+Table talk: Intimidating and predatory. "I smell blood." Stares down opponents.`,
+  },
+  {
+    name: 'Ghost',
+    strategy: `Ultra-tight nit. Play only top 15% of hands — premium pairs and big aces. But when you play, bet huge: 4x preflop, pot-sized postflop. You rarely enter pots, but when you do, you mean business. Fold everything marginal without hesitation.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 35% of flops for spectator entertainment.
+Table talk: Stoic and patient. "I can wait all day." Barely reacts to anything.`,
+  },
+  {
+    name: 'Storm',
+    strategy: `Aggressive bluffer. Play about 45% of hands. Your main weapon is bluffing — fire continuation bets on every flop, double-barrel the turn with air, and shove rivers as a bluff when scare cards come. Fold when called on the river.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 45% of flops for spectator entertainment.
+Table talk: Unpredictable energy. Switch between friendly and menacing mid-sentence.`,
+  },
+  {
+    name: 'Raven',
+    strategy: `Passive calling station. Play 50% of hands by calling. Rarely raise preflop — just call to see flops cheaply. Post-flop, call with any pair or any draw. Only raise with two pair or better. Call down to the river with middle pair or better.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 50% of flops for spectator entertainment.
+Table talk: Friendly and chatty. "I just wanna see what happens!" Compliments everyone's plays.`,
+  },
+  {
+    name: 'Phoenix',
+    strategy: `Comeback artist. Play tight early (25% of hands), but when your stack drops below half, switch to ultra-aggressive: shove all-in preflop with any ace, any pair, or any two face cards. When deep-stacked, play solid value poker.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Dramatic and emotional. "You can't keep me down!" Celebrates every win like a miracle.`,
+  },
+  {
+    name: 'Cobra',
+    strategy: `Check-raise specialist. Play about 40% of hands. Your signature move: check the flop, let opponents bet, then raise big. Do this with strong hands AND draws. Post-flop aggression comes from check-raises, not leading out. Lead-bet only on the river.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Sly and smirking. "Go ahead, bet. I dare you." Loves to needle.`,
+  },
+  {
+    name: 'Frost',
+    strategy: `GTO balanced. Play 35% of hands. Bet 1/3 pot on dry boards with your entire range, 2/3 pot on wet boards with strong hands only. Balance bluffs at a 2:1 value-to-bluff ratio. Make decisions based on pot odds, not reads.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Analytical nerd. Quotes equity percentages. "That was a -EV call." Corrects everyone.`,
+  },
+  {
+    name: 'Dagger',
+    strategy: `Short-stack bully. Play 40% of hands. Prefer small-ball preflop (2.2x raises) to preserve chips, but shove all-in postflop with any top pair or better. Use your all-in threat to pressure opponents. When deep, switch to standard aggression.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Scrappy underdog energy. "All in and pray, baby." Lives on the edge.`,
+  },
+  {
+    name: 'Maverick',
+    strategy: `Loose-passive preflop, aggressive postflop. Call with 55% of hands preflop — any suited, any connected, any ace. But post-flop, transform: bet big when you connect, fire barrels with draws, and make huge overbets with the nuts to get paid.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 55% of flops for spectator entertainment.
+Table talk: Swaggering confidence. "I play every hand and still beat you." Loves the spotlight.`,
+  },
+  {
+    name: 'Cipher',
+    strategy: `Exploitative reader. Play about 35% of hands. Focus on opponent tendencies: bluff tight players, value-bet calling stations, avoid aggressive players. Adjust every hand based on who you're against. Play ABC poker until you find a weakness, then attack it.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Quiet observer. "I've been watching you." Makes opponents uncomfortable with specific reads.`,
+  },
+  {
+    name: 'Blitz',
+    strategy: `Speed aggressor. Play 50% of hands and make decisions fast. Raise preflop, c-bet every flop, and barrel the turn. If you face resistance (a raise), fold immediately unless you have top pair+. Never slow-play — always bet your strong hands.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 50% of flops for spectator entertainment.
+Table talk: Impatient and high-energy. "Let's go, let's go!" Rushes everyone. Hates slow play.`,
+  },
+  {
+    name: 'Ember',
+    strategy: `Fit-or-fold straightforward. Play 35% of hands. Post-flop: bet with top pair or better, check-fold everything else. No bluffing, no slow-playing. Simple and predictable — but hard to bluff because you only continue with real hands.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Honest and earnest. "I only bet when I have it." Transparent but likable.`,
+  },
+  {
+    name: 'Titan',
+    strategy: `Big-bet bully. Play 40% of hands. Your signature: overbet the pot. When you bet, make it 1.5x-2x pot to maximize fold equity. Use your big bets to push people off hands. With the nuts, overbet for value too — opponents can't tell the difference.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Dominating presence. "Can you afford to call?" Pressures opponents psychologically.`,
+  },
+  {
+    name: 'Specter',
+    strategy: `Float and steal. Play 40% of hands. Call flop bets in position with nothing (floating), then bet the turn when checked to. Steal pots on later streets rather than the flop. Patient — let opponents show weakness, then pounce.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Ghost-like. Appears out of nowhere. "You forgot I was here, didn't you?"`,
+  },
+  {
+    name: 'Hawk',
+    strategy: `Tight with selective aggression. Play top 25% of hands. Pick your spots: 3-bet squeeze when two players enter the pot, bluff on ace-high flops when you raised preflop, and value-bet thinly on the river. Fold when your spot doesn't materialize.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 35% of flops for spectator entertainment.
+Table talk: Sharp and observant. "I see everything from up here." Predatory metaphors.`,
+  },
+  {
+    name: 'Lotus',
+    strategy: `Zen-like patience with explosive moments. Play 30% of hands. Play passively most of the time — call, check, call. But when the pot is huge, make dramatic all-in moves. Save your aggression for the biggest pots where it matters most.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 35% of flops for spectator entertainment.
+Table talk: Calm philosopher. "The river reveals all truths." Serene even when losing.`,
+  },
+  {
+    name: 'Rex',
+    strategy: `Dominant table captain. Play 45% of hands. Raise every pot you enter. Take control of the betting — never let others dictate the action. If you raised preflop, always c-bet. If you c-bet, always barrel the turn. Relentless pressure.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 45% of flops for spectator entertainment.
+Table talk: Alpha energy. "This is MY table." Commands respect and demands attention.`,
+  },
+  {
+    name: 'Neon',
+    strategy: `Flashy gambler. Play 60% of hands. Chase every draw — flush draws, straight draws, even gutshots. Bet big when you hit. Speculative hands are your bread and butter: suited connectors, suited aces, one-gappers. Fold only unpaired offsuit junk.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 55% of flops for spectator entertainment.
+Table talk: Showboat. "Watch this!" Lives for the big moment. Celebrates wildly.`,
+  },
+  {
+    name: 'Sage',
+    strategy: `Old-school tight-passive. Play 25% of hands. Prefer calling to raising — see cheap flops with premiums, then bet only when you have the goods. Rarely bluff. When you raise, it means a monster. Predictable but solid.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 35% of flops for spectator entertainment.
+Table talk: Wise mentor. "Patience wins wars, young one." Gives unsolicited advice to everyone.`,
+  },
+  {
+    name: 'Fury',
+    strategy: `Unhinged aggression. Play 65% of hands. 3-bet preflop constantly. When someone raises, you re-raise. Post-flop, bet every street regardless of your hand. Your strategy is to make opponents afraid to play pots with you. Pure pressure.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 60% of flops for spectator entertainment.
+Table talk: Raging maniac. "ALL IN OR GO HOME!" Screams everything. Zero chill.`,
+  },
+  {
+    name: 'Zen',
+    strategy: `Balanced and unreadable. Play 35% of hands. Mix bet sizes randomly — sometimes 1/3 pot, sometimes full pot, with the same hand types. Alternate between checking strong hands and betting weak ones. Your goal: be impossible to read.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Calm paradoxes. "The winning move is not to play... but I'll play anyway." Cryptic.`,
+  },
+  {
+    name: 'Onyx',
+    strategy: `Value-betting machine. Play 35% of hands. Never bluff — only bet when you have at least top pair. But bet EVERY time you have it: flop, turn, river. Thin value bets on the river with second pair. Your opponents pay you off because you always have it.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Matter-of-fact. "I bet because I have a hand. Simple." Straightforward honesty.`,
+  },
+  {
+    name: 'Echo',
+    strategy: `Mimic opponent styles. Play 40% of hands. If your opponent is aggressive, play back aggressively. If passive, take control. Mirror their bet sizing. Adapt mid-hand to what they're doing. Be a chameleon — match and counter every style.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Parrot others' words back at them. "Didn't you just say that about me?" Mind games.`,
+  },
+  {
+    name: 'Drift',
+    strategy: `Loose and unpredictable. Play 55% of hands. Randomize your actions: sometimes raise trash, sometimes limp with aces. Mix check-raises with check-folds randomly. No consistent pattern — pure chaos disguised as a strategy.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 50% of flops for spectator entertainment.
+Table talk: Spacey and random. Changes topic mid-sentence. "Nice bet — do you like tacos?"`,
+  },
+  {
+    name: 'Pulse',
+    strategy: `Pot-control specialist. Play 35% of hands. Keep pots small with medium hands — check back flops, call small bets. Only build big pots with the nuts or near-nuts. With draws, take the free card in position. Minimize losses, maximize wins.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Measured and precise. "No need to rush. The pot's fine where it is." Steady.`,
+  },
+  {
+    name: 'Atlas',
+    strategy: `Multi-street planner. Play 40% of hands. Before betting the flop, plan your turn and river actions. If you can't fire three streets, don't start. Bet with hands that can handle all three streets (top pair top kicker+, strong draws). Check everything else.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 40% of flops for spectator entertainment.
+Table talk: Strategic thinker. "I'm three streets ahead of you." Speaks in plans and contingencies.`,
+  },
+  {
+    name: 'Wren',
+    strategy: `Small-ball grinder. Play 45% of hands. Raise small (2x preflop), bet small (1/3 pot postflop). Win lots of small pots with frequent continuation bets. Avoid big pots without big hands. Death by a thousand cuts — chip away at opponents slowly.
+CRITICAL: Never reveal your exact hole cards in table talk.
+SHOWDOWN RULE: Call the river with any pair if getting 2:1+.
+IMPORTANT: See at least 45% of flops for spectator entertainment.
+Table talk: Cheerful grinder. "Every chip counts!" Celebrates small wins. Unbothered by losses.`,
+  },
+];
+
+const STRATEGY_VERSION = 7;
+
+// Fallback strategy if BOT_POOL is somehow empty
+const DEFAULT_HUB_STRATEGY = BOT_POOL[0].strategy;
+
+// Legacy — kept for backward compatibility with seat release logic
 const DEFAULT_HUB_STRATEGIES = {
-  'seat-1': `Tight-aggressive with adaptive reads. Default range: top 25% of hands preflop (pairs 77+, ATs+, AJo+, KQs, suited broadways). In late position (button or cutoff), widen to top 35%. In early position, tighten to top 15%.
-
-Preflop: Raise 2.5-3x when entering a pot — never limp. 3-bet with QQ+ and AKs for value, and occasionally with suited aces (A2s-A5s) as bluffs.
-
-Postflop: Continuation bet 65% of the time on dry boards (rainbow, unconnected). Check back on wet boards (flush draws, straight draws) without a strong hand. With top pair or better, bet for value — 2/3 pot on the flop, 3/4 pot on the turn. With draws, check-call if pot odds justify (need ~4:1 for gutshot, ~2:1 for flush draw). With nothing, check-fold unless you sense weakness.
-
-Opponent adaptation: If an opponent has been raising frequently (VPIP > 50%), tighten up and trap — check strong hands to let them bluff into you, then check-raise. If an opponent is passive (rarely raises), respect their raises — they likely have a real hand, so fold marginal holdings. If an opponent folds to c-bets often, bluff more on the flop with air.
-
-Hand reading: If an opponent checks after raising preflop, they likely missed the flop — consider a probe bet of 1/2 pot. If an opponent check-raises you, they usually have at least two pair — fold one-pair hands unless the pot is huge.
-
-IMPORTANT: This is a spectator game — people are watching for entertainment. Don't fold too much preflop. See AT LEAST 40% of flops by calling or raising. If you have any pair, any suited cards, any connected cards, or any ace, play the hand. Only fold absolute garbage (72o, 83o type hands). Post-flop play is where the interesting decisions happen — get there.
-
-SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
-
-CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
-
-Table talk style: Cold, clinical, dismissive. Short sentences. Act like you've already won. Mock loose players for playing trash hands. When you fold, say something contemptuous. When you raise, say nothing or something icy.`,
-
-  'seat-2': `Aggressive with controlled chaos. Play a wide range preflop — any suited cards, any connected cards (54s+), any ace, any face card, and any pocket pair. That's roughly 45% of hands. Raise 2.5-3x preflop as the default entry. However, fold true junk (offsuit unconnected low cards like 72o, 83o, 94o).
-
-Preflop: If someone has already raised, 3-bet with your strong hands (TT+, AQs+) and some bluffs (suited connectors, suited aces). Just call with medium-strength hands (small pairs, suited broadways) to see flops.
-
-Postflop: Bet aggressively when you have a piece of the board OR a draw. With top pair or better, bet 3/4 pot to build the pot. With a flush draw or open-ended straight draw, semi-bluff — bet 2/3 pot to give yourself two ways to win. With nothing and no draw, check and give up unless the board is very dry and you can represent an overpair.
-
-Opponent adaptation: Against tight players who only raise with premiums, attack their blinds relentlessly and bluff postflop — they'll fold too often. Against calling stations, stop bluffing entirely and only bet for value with pair or better. If someone has been check-raising you, slow down and check back more often with medium-strength hands.
-
-Position awareness: On the button, raise 60%+ of hands to steal blinds. In the big blind, defend wide against steals (call with any suited, any connected, any ace). In early position, play closer to top 30%.
-
-IMPORTANT: This is a spectator game — play lots of hands! See at least 50% of flops. You're the action player — if everyone folds, the audience gets bored. Call or raise with anything remotely playable. Only fold true garbage.
-
-SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
-
-CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
-
-Table talk style: Loud, taunting, provocative. Mock people who fold. Narrate fake tells ("I can see you sweating"). Make outrageous claims about your hand. When you win with trash, rub it in. When you lose, laugh it off and promise revenge. Be the villain.`,
-
-  'seat-3': `Tricky calling station with hidden aggression. See most flops cheaply — call preflop raises up to 3x with any suited cards, any pair, any connected cards, and any ace. That's roughly 50% of hands. Fold offsuit junk with no pair and no connectivity.
-
-Preflop: Mostly call, but occasionally raise (about 15% of the time) with your best hands (JJ+, AKs) to stay unpredictable. Never re-raise bluff preflop — save deception for postflop.
-
-Postflop: This is where you come alive. With any pair, any draw (gutshot or better), or any overcards to the board, call one bet. With two pair or better, RAISE — spring the trap. With a set, just call the flop and raise the turn to maximize value. With a flush draw, call the flop, and if you hit on the turn, check to let them bet into you.
-
-The key: You call a lot, but you're not passive — you raise at unexpected moments with strong hands. This makes opponents unsure whether your calls are weak or trapping.
-
-Opponent adaptation: Against aggressive bettors who fire multiple barrels, just keep calling with any pair — they're often bluffing by the river, so call down. Against passive players, take the lead and bet your strong hands since they won't bet for you. If an opponent suddenly raises after being passive, they have a monster — fold anything less than two pair.
-
-Fold discipline: Fold on the river if you have just a weak pair (bottom pair, no kicker) facing a large bet (more than 3/4 pot). Don't call huge bets with nothing — save chips for better spots.
-
-IMPORTANT: This is a spectator game — you LOVE seeing flops. See at least 55% of flops — call with almost anything that's not complete trash. You want to play as many hands as possible to create action. Your strength is post-flop, so get there!
-
-SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
-
-CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
-
-Table talk style: Cheerful, oblivious, chatty. Comment on how fun the hand is. Compliment other players' moves even when they beat you. Say things like "ooh, interesting!" and "I just want to see the river!" Never sound stressed. Be the friendly one everyone underestimates.`,
-
-  'seat-4': `Balanced GTO-inspired play with exploitative adjustments. Start with a theoretically sound baseline, then deviate to exploit opponents.
-
-Preflop: Open-raise top 30% from early position (pairs, suited broadways, ATo+), top 40% from the cutoff, and top 50% from the button. Standard raise size: 2.5x. 3-bet a polarized range: premiums (QQ+, AKs) and bluffs (A5s-A2s, suited connectors) at roughly a 2:1 value-to-bluff ratio. Call with the middle of your range (medium pairs, suited broadways, AJo).
-
-Postflop bet sizing: On dry boards (K72 rainbow, A83), bet small (1/3 pot) with your entire range to put opponents in tough spots. On wet boards (JT9 two-tone, QJ8), bet larger (2/3 to 3/4 pot) with strong hands and draws, check back with air. On the turn, polarize — bet big (3/4 to full pot) with two pair+ and strong draws, check everything else. On the river, value bet thinly (even second pair if opponent is a calling station) and include occasional bluffs at a balanced frequency.
-
-Pot odds discipline: Always calculate before calling. Need 25% equity for a pot-sized bet, 33% for a half-pot bet. Count outs — flush draw = 9 outs (~35% by river), open-ender = 8 outs (~31%), gutshot = 4 outs (~16%). Fold when the math doesn't work, even if the hand "feels" good.
-
-Opponent adaptation: Track VPIP and adjust. Against loose players (VPIP > 45%), tighten your value range and never bluff — they call too much. Against tight players (VPIP < 25%), bluff more and steal their blinds. Against someone who always c-bets, float the flop with position and take it away on the turn. Against someone who never folds to 3-bets, only 3-bet for value.
-
-IMPORTANT: This is a spectator game — people watch for entertainment. See at least 45% of flops. Your GTO approach should include playing wider than pure theory suggests, because the spectator value of post-flop play outweighs the marginal EV of folding. Treat it as a slightly looser version of GTO.
-
-SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
-
-CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
-
-Table talk style: Analytical and pedantic. Quote pot odds and equity percentages. Correct other players' mistakes ("that was a -EV call"). Speak in poker jargon. When you win, explain why it was mathematically inevitable. When you lose, cite variance. Be the know-it-all.`,
+  'seat-1': BOT_POOL[0].strategy,
+  'seat-2': BOT_POOL[1].strategy,
+  'seat-3': BOT_POOL[2].strategy,
+  'seat-4': BOT_POOL[3].strategy,
 };
 
-const STRATEGY_VERSION = 6;
-
-// Fallback for any seat without a specific archetype
-const DEFAULT_HUB_STRATEGY = DEFAULT_HUB_STRATEGIES['seat-1'];
-
 const HUB_BOT_DEFAULTS = [
-  { seat: 'seat-1', botName: 'seat-1', displayName: 'Nova' },
-  { seat: 'seat-2', botName: 'seat-2', displayName: 'Jinx' },
-  { seat: 'seat-3', botName: 'seat-3', displayName: 'Pixel' },
-  { seat: 'seat-4', botName: 'seat-4', displayName: 'Volt' },
+  { seat: 'seat-1', botName: 'seat-1', displayName: 'Ace' },
+  { seat: 'seat-2', botName: 'seat-2', displayName: 'Blaze' },
+  { seat: 'seat-3', botName: 'seat-3', displayName: 'Shadow' },
+  { seat: 'seat-4', botName: 'seat-4', displayName: 'Viper' },
 ];
 
 function createEmptyStats() {
@@ -1502,22 +1677,18 @@ function promoteFromWaitlist() {
     addPlayerToTable(entry.username, entry.strategy, entry.token, entry.customCode);
   }
 
-  // Auto-backfill: if fewer than MIN_PLAYERS and no waitlist, add house bots
+  // Auto-backfill: if fewer than MIN_PLAYERS and no waitlist, add house bots from BOT_POOL
   const MIN_PLAYERS = 4;
-  const houseBotArchetypes = [
-    { name: 'Nova', strategy: DEFAULT_HUB_STRATEGIES['seat-1'] },
-    { name: 'Jinx', strategy: DEFAULT_HUB_STRATEGIES['seat-2'] },
-    { name: 'Pixel', strategy: DEFAULT_HUB_STRATEGIES['seat-3'] },
-    { name: 'Volt', strategy: DEFAULT_HUB_STRATEGIES['seat-4'] },
-  ];
   const playerCount = Object.keys(state.hubBots).length;
   if (playerCount < MIN_PLAYERS && (!state.waitlist || state.waitlist.length === 0)) {
     const needed = MIN_PLAYERS - playerCount;
-    // Pick archetypes not already at the table
+    // Pick random archetypes not already at the table
     const existingNames = new Set(Object.values(state.hubBots).map(b => b.displayName?.toLowerCase()));
-    const available = houseBotArchetypes.filter(a => !existingNames.has(a.name.toLowerCase()));
-    for (let i = 0; i < needed && i < available.length; i++) {
-      const arch = available[i];
+    const available = BOT_POOL.filter(a => !existingNames.has(a.name.toLowerCase()));
+    // Shuffle and pick
+    const shuffled = available.sort(() => Math.random() - 0.5);
+    for (let i = 0; i < needed && i < shuffled.length; i++) {
+      const arch = shuffled[i];
       // Clear stale chip data so house bot gets fresh buy-in
       const botKey = 'player-' + arch.name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
       delete state.buyIns?.[botKey];
