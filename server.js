@@ -1080,44 +1080,51 @@ function archiveHand(state) {
   if (!state.handHistory) state.handHistory = [];
   if (!state.hand) return;
 
+  const hand = state.hand;
   const record = {
     handNumber: state.handsPlayed,
     timestamp: new Date().toISOString(),
     players: {},
-    community: [...(state.hand.community || [])],
-    pot: state.hand.pot,
-    result: state.hand.result,
+    community: [...(hand.community || [])],
+    pot: hand.pot,
+    result: hand.result,
     actions: [],
+    blinds: { small: hand.smallBlind || 10, big: hand.bigBlind || 20 },
+    street: hand.street || 'preflop',
+    dealerIndex: hand.dealerIndex,
   };
 
-  // Capture each player's info
-  for (const [botName, player] of Object.entries(state.hand.players || {})) {
+  // Capture each player's info with starting chips
+  for (const [botName, player] of Object.entries(hand.players || {})) {
     const hubBot = state.hubBots?.[botName];
     record.players[botName] = {
       displayName: hubBot?.displayName || botName,
       username: hubBot?.claimedBy || null,
       cards: player.cards,
-      chips: player.chips,
+      chipsStart: (player.chips || 0) + (player.totalBet || 0), // chips before the hand
+      chipsEnd: player.chips,
       totalBet: player.totalBet,
       folded: player.folded,
       strategy: hubBot?.strategy || null,
     };
   }
 
-  // Capture actions from log for this hand
-  const handStartTick = state.hand.startTick;
+  // Capture ALL actions from log including thoughts (for full replay)
+  const handStartTick = hand.startTick;
   for (const entry of state.log) {
-    if (entry.tick >= handStartTick && entry.action !== 'thought') {
+    if (entry.tick >= handStartTick) {
       record.actions.push({
         bot: entry.bot,
+        displayName: entry.displayName,
         action: entry.action,
         message: entry.message,
         amount: entry.amount,
         tick: entry.tick,
+        visibility: entry.visibility,
       });
-    }
-    if (entry.tick >= handStartTick && entry.action === 'thought') {
-      if (record.players[entry.bot]) {
+
+      // Also store thoughts on player object for quick access
+      if (entry.action === 'thought' && record.players[entry.bot]) {
         if (!record.players[entry.bot].thoughts) record.players[entry.bot].thoughts = [];
         record.players[entry.bot].thoughts.push(entry.message);
       }
