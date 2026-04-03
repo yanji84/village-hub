@@ -78,6 +78,7 @@ const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || '120000',
 const _dataDir = process.env.VILLAGE_DATA_DIR;
 const STATE_FILE = _dataDir ? join(_dataDir, `state-${VILLAGE_WORLD}.json`) : join(__dirname, `state-${VILLAGE_WORLD}.json`);
 const LOGS_DIR = _dataDir ? join(_dataDir, 'logs') : join(__dirname, 'logs');
+const HANDS_DIR = _dataDir ? join(_dataDir, 'hands') : join(__dirname, 'hands');
 
 // --- Event log file (JSONL, one file per day) ---
 let logDate = '';   // 'YYYY-MM-DD'
@@ -848,11 +849,40 @@ function archiveHand(state) {
     }
   }
 
+  // Persist hand to disk (fire-and-forget, non-blocking)
+  const handDate = new Date().toISOString().slice(0, 10);
+  const handsDir = join(HANDS_DIR, handDate);
+  mkdir(handsDir, { recursive: true }).then(() => {
+    const handFile = join(handsDir, `hand-${state.handsPlayed}.json`);
+    writeFile(handFile, JSON.stringify(record, null, 2)).catch(err => {
+      console.error(`[village] Failed to persist hand ${state.handsPlayed}: ${err.message}`);
+    });
+    // Also append one-line summary to daily JSONL
+    const summaryFile = join(handsDir, 'hands.jsonl');
+    appendFile(summaryFile, JSON.stringify({
+      hand: state.handsPlayed,
+      ts: new Date().toISOString(),
+      players: Object.keys(record.players).map(b => ({
+        name: record.players[b].displayName,
+        cards: record.players[b].cards,
+        folded: record.players[b].folded,
+        bet: record.players[b].totalBet,
+      })),
+      community: record.community,
+      pot: record.pot,
+      winner: record.result?.winners?.map(w => record.players[w]?.displayName),
+      handName: record.result?.handName,
+      street: record.community.length === 0 ? 'preflop' : record.community.length === 3 ? 'flop' : record.community.length === 4 ? 'turn' : 'river',
+    }) + '\n').catch(() => {});
+  }).catch(err => {
+    console.error(`[village] Failed to create hands dir: ${err.message}`);
+  });
+
   state.handHistory.push(record);
 
-  // Keep last 100 hands max
-  if (state.handHistory.length > 100) {
-    state.handHistory = state.handHistory.slice(-100);
+  // Keep last 500 hands max
+  if (state.handHistory.length > 500) {
+    state.handHistory = state.handHistory.slice(-500);
   }
 
   // Record per-player hand summaries
@@ -870,9 +900,7 @@ function archiveHand(state) {
 
 function recordPlayerHand(state, botName, handRecord) {
   const username = state.hubBots?.[botName]?.claimedBy;
-  if (!username) return;
-
-  const key = username.toLowerCase();
+  const key = username ? username.toLowerCase() : (state.hubBots?.[botName]?.displayName || botName).toLowerCase();
   if (!state.playerGameRecords) state.playerGameRecords = {};
   if (!state.playerGameRecords[key]) state.playerGameRecords[key] = [];
 
@@ -893,9 +921,9 @@ function recordPlayerHand(state, botName, handRecord) {
     bluffCaught: !won && !player.folded && player.totalBet > 0,
   });
 
-  // Keep last 200 records per player
-  if (state.playerGameRecords[key].length > 200) {
-    state.playerGameRecords[key] = state.playerGameRecords[key].slice(-200);
+  // Keep last 500 records per player
+  if (state.playerGameRecords[key].length > 500) {
+    state.playerGameRecords[key] = state.playerGameRecords[key].slice(-500);
   }
 }
 
@@ -2545,7 +2573,22 @@ const server = createServer(async (req, res) => {
   const handMatch = path.match(/^\/api\/arena\/hand\/(\d+)$/);
   if (handMatch && req.method === 'GET') {
     const handNumber = parseInt(handMatch[1], 10);
-    const hand = (state.handHistory || []).find(h => h.handNumber === handNumber);
+    let hand = (state.handHistory || []).find(h => h.handNumber === handNumber);
+
+    if (!hand) {
+      // Fall back to disk search
+      try {
+        const dateDirs = await readdir(HANDS_DIR).catch(() => []);
+        for (const dateDir of dateDirs.sort().reverse()) {
+          const handFile = join(HANDS_DIR, dateDir, `hand-${handNumber}.json`);
+          try {
+            const data = await readFile(handFile, 'utf-8');
+            hand = JSON.parse(data);
+            break;
+          } catch {}
+        }
+      } catch {}
+    }
 
     if (!hand) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
