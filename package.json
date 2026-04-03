@@ -39,6 +39,7 @@
     "@anthropic-ai/sdk": "^0.81.0",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
+    "isolated-vm": "^6.1.2",
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {

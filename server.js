@@ -39,8 +39,12 @@ import { readFile, writeFile, rename, copyFile, mkdir, readdir, stat } from 'nod
 import { appendFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { loadWorld } from './world-loader.js';
 import { callLLM } from './lib/llm-caller.js';
+
+const _require = createRequire(import.meta.url);
+const ivm = _require('isolated-vm');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -331,9 +335,62 @@ function trackFailure(botName) {
   }
 }
 
+// --- Sandboxed player code execution ---
+
+function runPlayerCode(codeString, gameState) {
+  if (!codeString || typeof codeString !== 'string' || codeString.length > 5000) return null;
+
+  try {
+    const isolate = new ivm.Isolate({ memoryLimit: 8 }); // 8MB
+    const context = isolate.createContextSync();
+
+    // Inject game state as a frozen global
+    const stateJson = JSON.stringify(gameState);
+    context.evalSync(`const state = Object.freeze(JSON.parse('${stateJson.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'));`);
+
+    // Run player code with timeout
+    const wrappedCode = `
+      ${codeString}
+      typeof analyze === 'function' ? String(analyze(state)).substring(0, 500) : 'Error: define an analyze(state) function';
+    `;
+    const result = context.evalSync(wrappedCode, { timeout: 100 }); // 100ms timeout
+
+    isolate.dispose();
+    return typeof result === 'string' ? result : String(result).substring(0, 500);
+  } catch (err) {
+    return `[Tool error: ${err.message}]`;
+  }
+}
+
 // --- Send scene to a hub-managed bot (local LLM call) ---
 
 async function sendSceneLocal(botName, strategy, payload) {
+  // Run player's custom code if present
+  const hubBot = state.hubBots?.[botName];
+  if (hubBot?.customCode) {
+    const gameState = {
+      myCards: state.hand?.players?.[botName]?.cards || [],
+      board: state.hand?.community || [],
+      pot: state.hand?.pot || 0,
+      toCall: Math.max(0, (state.hand?.currentBet || 0) - (state.hand?.players?.[botName]?.bet || 0)),
+      chips: state.hand?.players?.[botName]?.chips || 0,
+      street: state.hand?.street || 'preflop',
+      opponents: state.hand?.seats?.filter(s => s.botName !== botName).map(s => ({
+        name: s.displayName,
+        chips: state.hand.players[s.botName]?.chips || 0,
+        bet: state.hand.players[s.botName]?.bet || 0,
+        folded: state.hand.players[s.botName]?.folded || false,
+      })) || [],
+      blinds: { small: state.hand?.smallBlind || 10, big: state.hand?.bigBlind || 20 },
+      handNumber: state.handsPlayed || 0,
+    };
+
+    const toolOutput = runPlayerCode(hubBot.customCode, gameState);
+    if (toolOutput) {
+      payload.scene = `## Your Analysis Tool\n${toolOutput}\n\n${payload.scene}`;
+    }
+  }
+
   try {
     const response = await callLLM(
       botName,
@@ -1303,7 +1360,7 @@ function ensureArenaState() {
 
 // --- Add/remove players dynamically ---
 
-function addPlayerToTable(username, strategy, token) {
+function addPlayerToTable(username, strategy, token, customCode) {
   const botName = 'player-' + username.toLowerCase().replace(/[^a-z0-9_-]/g, '');
   if (Object.keys(state.hubBots || {}).length >= MAX_TABLE_PLAYERS) {
     return { error: 'table_full' };
@@ -1319,6 +1376,7 @@ function addPlayerToTable(username, strategy, token) {
     displayName: username,
     sessionHandCount: 0,
     maxHandsPerSession: MAX_HANDS_PER_SESSION,
+    customCode: customCode || null,
   };
 
   // Add to game
@@ -1394,7 +1452,7 @@ function promoteFromWaitlist() {
   // First: promote real waitlisted players
   while (state.waitlist?.length > 0 && Object.keys(state.hubBots).length < MAX_TABLE_PLAYERS) {
     const entry = state.waitlist.shift();
-    addPlayerToTable(entry.username, entry.strategy, entry.token);
+    addPlayerToTable(entry.username, entry.strategy, entry.token, entry.customCode);
   }
 
   // Auto-backfill: if fewer than MIN_PLAYERS and no waitlist, add house bots
@@ -1967,6 +2025,7 @@ const server = createServer(async (req, res) => {
         stats: state.stats?.[botName] || createEmptyStats(),
         sessionHandCount: hub.sessionHandCount || 0,
         maxHandsPerSession: MAX_HANDS_PER_SESSION,
+        hasCode: !!hub.customCode,
       };
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2127,7 +2186,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const { seat, claimToken, strategy } = body || {};
+    const { seat, claimToken, strategy, customCode } = body || {};
     if (!seat || !claimToken || typeof strategy !== 'string') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing seat, claimToken, or strategy' }));
@@ -2148,6 +2207,9 @@ const server = createServer(async (req, res) => {
     }
 
     hubBot.strategy = strategy;
+    if (customCode !== undefined) {
+      hubBot.customCode = (typeof customCode === 'string' && customCode.trim().length > 0 && customCode.length <= 5000) ? customCode : null;
+    }
     await saveState();
 
     broadcastEvent({
@@ -2171,7 +2233,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const { username, strategy, token, pin } = body || {};
+    const { username, strategy, token, pin, customCode } = body || {};
 
     // Validate username
     if (!username || typeof username !== 'string' || username.length < 1 || username.length > 20 || !/^[a-zA-Z0-9_-]+$/.test(username)) {
@@ -2186,6 +2248,9 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Strategy must be a string of 2000 chars or less' }));
       return;
     }
+
+    // Sanitize customCode
+    const sanitizedCode = (typeof customCode === 'string' && customCode.trim().length > 0 && customCode.length <= 5000) ? customCode : null;
 
     if (!token) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2227,6 +2292,7 @@ const server = createServer(async (req, res) => {
         state.hubBots[existingBotName].claimToken = token;
         // Update strategy if provided
         if (strategy) state.hubBots[existingBotName].strategy = strategy;
+        if (sanitizedCode !== undefined) state.hubBots[existingBotName].customCode = sanitizedCode;
         await saveState();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, restored: true, seated: true, botName: existingBotName }));
@@ -2238,9 +2304,10 @@ const server = createServer(async (req, res) => {
         w.username.toLowerCase() === userKey
       );
       if (queueIdx !== -1) {
-        // Update waitlist entry token and strategy
+        // Update waitlist entry token, strategy, and custom code
         state.waitlist[queueIdx].token = token;
         if (strategy) state.waitlist[queueIdx].strategy = strategy;
+        if (sanitizedCode !== undefined) state.waitlist[queueIdx].customCode = sanitizedCode;
         await saveState();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, restored: true, position: queueIdx + 1 }));
@@ -2260,7 +2327,7 @@ const server = createServer(async (req, res) => {
 
     // Try to seat directly if table has room and not in betting phase
     if (Object.keys(state.hubBots || {}).length < MAX_TABLE_PLAYERS && state.clock.phase !== 'betting') {
-      const result = addPlayerToTable(username, strategy, token);
+      const result = addPlayerToTable(username, strategy, token, sanitizedCode);
       if (result.ok) {
         await saveState();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2275,6 +2342,7 @@ const server = createServer(async (req, res) => {
       strategy,
       joinedAt: new Date().toISOString(),
       token,
+      customCode: sanitizedCode,
     });
 
     broadcastEvent({

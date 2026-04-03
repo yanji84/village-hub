@@ -64,7 +64,7 @@ export function createArenaRouter({ config, limiter }) {
 
   // --- POST /strategy ---
   router.post('/strategy', async (req, res) => {
-    const { botName, strategy } = req.body || {};
+    const { botName, strategy, customCode } = req.body || {};
     const cookies = parseCookies(req);
     const token = cookies.arena_token;
 
@@ -76,12 +76,17 @@ export function createArenaRouter({ config, limiter }) {
     if (strategy.length > 2000) {
       return res.status(400).json({ error: 'Strategy must be 2000 chars or less' });
     }
+    if (customCode && typeof customCode === 'string' && customCode.length > 5000) {
+      return res.status(400).json({ error: 'Custom code must be 5000 chars or less' });
+    }
 
     try {
+      const payload = { seat: botName, strategy, claimToken: token };
+      if (customCode !== undefined) payload.customCode = customCode;
       const resp = await fetch(`${SERVER_URL}/api/arena/strategy`, {
         method: 'POST',
         headers: serverHeaders(),
-        body: JSON.stringify({ seat: botName, strategy, claimToken: token }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(10_000),
       });
       const data = await resp.json();
@@ -96,7 +101,7 @@ export function createArenaRouter({ config, limiter }) {
 
   // --- POST /waitlist ---
   router.post('/waitlist', claimLimiter, async (req, res) => {
-    const { username, strategy, pin } = req.body || {};
+    const { username, strategy, pin, customCode } = req.body || {};
 
     if (!username || typeof username !== 'string' || username.length < 1 || username.length > 20 || !/^[a-zA-Z0-9_-]+$/.test(username)) {
       return res.status(400).json({ error: 'Invalid username: 1-20 chars, alphanumeric/underscore/hyphen only' });
@@ -107,6 +112,9 @@ export function createArenaRouter({ config, limiter }) {
     if (strategy.length > 2000) {
       return res.status(400).json({ error: 'Strategy must be 2000 chars or less' });
     }
+    if (customCode && typeof customCode === 'string' && customCode.length > 5000) {
+      return res.status(400).json({ error: 'Custom code must be 5000 chars or less' });
+    }
     if (!pin || typeof pin !== 'string' || !/^\d{4}$/.test(pin)) {
       return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
     }
@@ -114,10 +122,12 @@ export function createArenaRouter({ config, limiter }) {
     const token = crypto.randomUUID();
 
     try {
+      const waitlistBody = { username, strategy, token, pin };
+      if (customCode !== undefined) waitlistBody.customCode = customCode;
       const resp = await fetch(`${SERVER_URL}/api/arena/waitlist`, {
         method: 'POST',
         headers: serverHeaders(),
-        body: JSON.stringify({ username, strategy, token, pin }),
+        body: JSON.stringify(waitlistBody),
         signal: AbortSignal.timeout(10_000),
       });
       const data = await resp.json();
