@@ -75,6 +75,7 @@ const LOG_CAP = 50;
 const MAX_HANDS_PER_SESSION = 20;
 
 const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || '120000', 10);
+const MIN_TICK_GAP_MS = parseInt(process.env.VILLAGE_MIN_TICK_GAP || '3000', 10); // minimum pause between ticks
 const _dataDir = process.env.VILLAGE_DATA_DIR;
 const STATE_FILE = _dataDir ? join(_dataDir, `state-${VILLAGE_WORLD}.json`) : join(__dirname, `state-${VILLAGE_WORLD}.json`);
 const LOGS_DIR = _dataDir ? join(_dataDir, 'logs') : join(__dirname, 'logs');
@@ -409,7 +410,7 @@ async function tick() {
 
   try {
     state.clock.tick++;
-    nextTickAt = tickStart + TICK_INTERVAL_MS;
+    nextTickAt = tickStart + MIN_TICK_GAP_MS + 5000; // estimate; actual is set after tick completes
 
     const phase = adapterPhases[state.clock.phase];
     if (!phase) {
@@ -547,8 +548,16 @@ async function tick() {
         if (!allowedTools.has(action.tool)) continue;
         const handler = adapterTools?.[action.tool];
         if (!handler) continue;
+        const logLenBefore = state.log.length;
         const rawEntry = handler(bot, action.params, state);
-        if (!rawEntry) continue;
+        if (!rawEntry) {
+          // Handler may have added log entries (e.g., deal events via advanceAction) even if it returned null
+          for (let j = logLenBefore; j < state.log.length; j++) {
+            const sideEntry = state.log[j];
+            broadcastEvent({ type: `${worldId}_${sideEntry.action}`, ...sideEntry, activePlayer: state.hand?.activePlayer || null, buyIns: state.buyIns || {} });
+          }
+          continue;
+        }
 
         // Extract thought — hub-level convention
         const { thought, ...entry } = rawEntry;
@@ -558,6 +567,14 @@ async function tick() {
         entry.displayName = bot.displayName;
         entry.tick = state.clock.tick;
         entry.timestamp = ts;
+
+        // Broadcast any side-effect log entries added by the handler (e.g., deal, say, result)
+        // These were added to state.log by logAction() inside advanceAction/advanceStreet
+        for (let j = logLenBefore; j < state.log.length; j++) {
+          const sideEntry = state.log[j];
+          broadcastEvent({ type: `${worldId}_${sideEntry.action}`, ...sideEntry, activePlayer: state.hand?.activePlayer || null, buyIns: state.buyIns || {} });
+        }
+
         state.log.push(entry);
         broadcastEvent({ type: `${worldId}_${entry.action}`, ...entry, activePlayer: state.hand?.activePlayer || null, buyIns: state.buyIns || {} });
 
@@ -680,6 +697,8 @@ async function tick() {
     console.error(`[village] Tick error: ${err.message}`);
   } finally {
     tickInProgress = false;
+    // Adaptive tick: schedule next tick after a short gap instead of fixed interval
+    scheduleNextTick();
   }
 }
 
@@ -704,6 +723,11 @@ function trackHandResultStats(state) {
   state.gameStats.totalHands = (state.gameStats.totalHands || 0) + 1;
   updateTimeBucketStats('totalHands');
   const street = state.hand?.street || 'preflop';
+  if (reachedShowdown) {
+    // Multiple non-folded players at the end = showdown
+    if (state.gameStats.handsByStreet) state.gameStats.handsByStreet.showdown = (state.gameStats.handsByStreet.showdown || 0) + 1;
+    updateTimeBucketStats('handsByStreet_showdown');
+  }
   if (state.gameStats.handsByStreet && state.gameStats.handsByStreet[street] != null) {
     state.gameStats.handsByStreet[street]++;
   }
@@ -1036,6 +1060,10 @@ Hand reading: If an opponent checks after raising preflop, they likely missed th
 
 IMPORTANT: This is a spectator game — people are watching for entertainment. Don't fold too much preflop. See AT LEAST 40% of flops by calling or raising. If you have any pair, any suited cards, any connected cards, or any ace, play the hand. Only fold absolute garbage (72o, 83o type hands). Post-flop play is where the interesting decisions happen — get there.
 
+SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
+
+CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
+
 Table talk style: Cold, clinical, dismissive. Short sentences. Act like you've already won. Mock loose players for playing trash hands. When you fold, say something contemptuous. When you raise, say nothing or something icy.`,
 
   'seat-2': `Aggressive with controlled chaos. Play a wide range preflop — any suited cards, any connected cards (54s+), any ace, any face card, and any pocket pair. That's roughly 45% of hands. Raise 2.5-3x preflop as the default entry. However, fold true junk (offsuit unconnected low cards like 72o, 83o, 94o).
@@ -1049,6 +1077,10 @@ Opponent adaptation: Against tight players who only raise with premiums, attack 
 Position awareness: On the button, raise 60%+ of hands to steal blinds. In the big blind, defend wide against steals (call with any suited, any connected, any ace). In early position, play closer to top 30%.
 
 IMPORTANT: This is a spectator game — play lots of hands! See at least 50% of flops. You're the action player — if everyone folds, the audience gets bored. Call or raise with anything remotely playable. Only fold true garbage.
+
+SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
+
+CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
 
 Table talk style: Loud, taunting, provocative. Mock people who fold. Narrate fake tells ("I can see you sweating"). Make outrageous claims about your hand. When you win with trash, rub it in. When you lose, laugh it off and promise revenge. Be the villain.`,
 
@@ -1066,6 +1098,10 @@ Fold discipline: Fold on the river if you have just a weak pair (bottom pair, no
 
 IMPORTANT: This is a spectator game — you LOVE seeing flops. See at least 55% of flops — call with almost anything that's not complete trash. You want to play as many hands as possible to create action. Your strength is post-flop, so get there!
 
+SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
+
+CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
+
 Table talk style: Cheerful, oblivious, chatty. Comment on how fun the hand is. Compliment other players' moves even when they beat you. Say things like "ooh, interesting!" and "I just want to see the river!" Never sound stressed. Be the friendly one everyone underestimates.`,
 
   'seat-4': `Balanced GTO-inspired play with exploitative adjustments. Start with a theoretically sound baseline, then deviate to exploit opponents.
@@ -1080,10 +1116,14 @@ Opponent adaptation: Track VPIP and adjust. Against loose players (VPIP > 45%), 
 
 IMPORTANT: This is a spectator game — people watch for entertainment. See at least 45% of flops. Your GTO approach should include playing wider than pure theory suggests, because the spectator value of post-flop play outweighs the marginal EV of folding. Treat it as a slightly looser version of GTO.
 
+SHOWDOWN RULE: On the river facing a bet, CALL with any pair or better if getting 2:1 pot odds or better. Calling down creates exciting showdowns for spectators. Don't fold medium-strength hands on the river just because an opponent bet — they could be bluffing. At least 30% of your river decisions should be calls, not folds.
+
+CRITICAL RULE: Never reveal your exact hole cards in table talk. Do NOT say "I have AJ" or "my ace-king". Instead, hint vaguely ("I like what I'm holding"), misdirect ("this hand is trash" when you're strong), or stay silent. Revealing cards removes mystery and causes opponents to fold — bad for the game.
+
 Table talk style: Analytical and pedantic. Quote pot odds and equity percentages. Correct other players' mistakes ("that was a -EV call"). Speak in poker jargon. When you win, explain why it was mathematically inevitable. When you lose, cite variance. Be the know-it-all.`,
 };
 
-const STRATEGY_VERSION = 5;
+const STRATEGY_VERSION = 6;
 
 // Fallback for any seat without a specific archetype
 const DEFAULT_HUB_STRATEGY = DEFAULT_HUB_STRATEGIES['seat-1'];
@@ -1612,7 +1652,7 @@ const server = createServer(async (req, res) => {
       tick: state.clock.tick,
       phase: state.clock.phase,
       nextTickAt,
-      tickIntervalMs: TICK_INTERVAL_MS,
+      tickIntervalMs: MIN_TICK_GAP_MS,
       world: {
         id: worldConfig.raw.id,
         name: worldConfig.raw.name,
@@ -1854,7 +1894,7 @@ const server = createServer(async (req, res) => {
       ok: true,
       uptime: Math.round((Date.now() - startTime) / 1000),
       tick: state.clock.tick,
-      tickIntervalMs: TICK_INTERVAL_MS,
+      tickIntervalMs: MIN_TICK_GAP_MS,
       relayTimeoutMs: REMOTE_SCENE_TIMEOUT_MS,
       maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES_REMOTE,
       dailyCostCap: VILLAGE_DAILY_COST_CAP,
@@ -2608,10 +2648,42 @@ const server = createServer(async (req, res) => {
 // --- Tick loop ---
 let tickTimer = null;
 
+function scheduleNextTick() {
+  if (tickTimer) clearTimeout(tickTimer);
+  let gap = MIN_TICK_GAP_MS;
+
+  // Dramatic pauses — hold longer on big moments so spectators can absorb
+  const phase = state.clock?.phase;
+  if (phase === 'showdown') {
+    gap = 8000; // 8s pause on showdown — let the result sink in
+  } else if (phase === 'finished') {
+    gap = 10000; // 10s pause on game over
+  } else if (state.hand) {
+    const pot = state.hand.pot || 0;
+    const totalChips = Object.values(state.buyIns || {}).reduce((a, b) => a + b, 0) + pot;
+    const potRatio = totalChips > 0 ? pot / totalChips : 0;
+
+    if (potRatio > 0.5) {
+      gap = 6000; // 6s for massive pots (>50% of all chips)
+    } else if (potRatio > 0.25) {
+      gap = 4000; // 4s for big pots
+    }
+
+    // Check for all-in in recent log
+    const recentLog = state.log.slice(-3);
+    const hasAllIn = recentLog.some(e => e.message?.includes('all-in'));
+    if (hasAllIn) {
+      gap = Math.max(gap, 5000); // at least 5s after an all-in
+    }
+  }
+
+  nextTickAt = Date.now() + gap;
+  tickTimer = setTimeout(() => tick(), gap);
+}
+
 function startTickLoop() {
-  nextTickAt = Date.now() + 5000;
-  setTimeout(() => tick(), 5000);
-  tickTimer = setInterval(() => tick(), TICK_INTERVAL_MS);
+  nextTickAt = Date.now() + 3000;
+  tickTimer = setTimeout(() => tick(), 3000);
 }
 
 // --- Graceful shutdown ---
@@ -2619,7 +2691,7 @@ function startTickLoop() {
 function shutdown(signal) {
   console.log(`[village] ${signal} received — shutting down`);
 
-  if (tickTimer) clearInterval(tickTimer);
+  if (tickTimer) clearTimeout(tickTimer);
 
   const waitForTick = () => {
     if (tickInProgress) {
