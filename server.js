@@ -1132,7 +1132,21 @@ function archiveHand(state) {
       username: hubBot?.claimedBy || null,
       cards: player.cards,
       chipsStart: (player.chips || 0) + (player.totalBet || 0), // chips before the hand
-      chipsEnd: player.chips,
+      chipsEnd: (() => {
+        // Compute chipsEnd directly: start - bet + winnings
+        const start = (player.chips || 0) + (player.totalBet || 0);
+        const winners = hand.result?.winners || [];
+        let winnings = 0;
+        if (winners.includes(botName)) {
+          const share = Math.floor(hand.pot / winners.length);
+          winnings = share;
+          // First winner gets remainder
+          if (winners[0] === botName) {
+            winnings += hand.pot - share * winners.length;
+          }
+        }
+        return start - (player.totalBet || 0) + winnings;
+      })(),
       totalBet: player.totalBet,
       folded: player.folded,
       strategy: hubBot?.strategy || null,
@@ -1268,10 +1282,13 @@ function updateEloRatings(state) {
   const K = 32;
   const botNames = Object.keys(profits);
 
-  for (let i = 0; i < botNames.length; i++) {
-    for (let j = i + 1; j < botNames.length; j++) {
-      const a = botNames[i];
-      const b = botNames[j];
+  // Filter out ephemeral bots from Elo calculations
+  const eloEligible = botNames.filter(b => !state.hubBots?.[b]?.ephemeral);
+
+  for (let i = 0; i < eloEligible.length; i++) {
+    for (let j = i + 1; j < eloEligible.length; j++) {
+      const a = eloEligible[i];
+      const b = eloEligible[j];
 
       if (!state.stats[a]) state.stats[a] = createEmptyStats();
       if (!state.stats[b]) state.stats[b] = createEmptyStats();
@@ -1834,7 +1851,7 @@ function ensureArenaState() {
 
 // --- Add/remove players dynamically ---
 
-function addPlayerToTable(username, strategy, token, customCode, playMode) {
+function addPlayerToTable(username, strategy, token, customCode, playMode, ephemeral) {
   const botName = 'player-' + username.toLowerCase().replace(/[^a-z0-9_-]/g, '');
   if (Object.keys(state.hubBots || {}).length >= MAX_TABLE_PLAYERS) {
     return { error: 'table_full' };
@@ -1852,6 +1869,7 @@ function addPlayerToTable(username, strategy, token, customCode, playMode) {
     maxHandsPerSession: MAX_HANDS_PER_SESSION,
     customCode: customCode || null,
     playMode: playMode || 'bot',
+    ephemeral: !!ephemeral,
   };
 
   // Add to game
@@ -1878,8 +1896,8 @@ function addPlayerToTable(username, strategy, token, customCode, playMode) {
   if (!state.stats[botName]) state.stats[botName] = createEmptyStats();
   state.stats[botName].username = username;
 
-  // Record lineage for evolution tracking
-  if (state.evolution && !state.evolution.lineage[botName]) {
+  // Record lineage for evolution tracking (skip ephemeral players)
+  if (state.evolution && !state.evolution.lineage[botName] && !ephemeral) {
     state.evolution.lineage[botName] = {
       name: username,
       parents: [],
@@ -1940,7 +1958,7 @@ function promoteFromWaitlist() {
   while (state.waitlist?.length > 0 && Object.keys(state.hubBots).length < MAX_TABLE_PLAYERS) {
     const entry = state.waitlist[0];
     try {
-      addPlayerToTable(entry.username, entry.strategy, entry.token, entry.customCode, entry.playMode);
+      addPlayerToTable(entry.username, entry.strategy, entry.token, entry.customCode, entry.playMode, entry.ephemeral);
       state.waitlist.shift(); // Only remove after successful add
     } catch (err) {
       console.error(`[village] Failed to promote ${entry.username} from waitlist:`, err.message);
@@ -2984,10 +3002,11 @@ const server = createServer(async (req, res) => {
 
     // Validate playMode
     const validPlayMode = (playMode === 'human') ? 'human' : 'bot';
+    const isEphemeral = !state.accounts?.[username.toLowerCase()];
 
     // Try to seat directly if table has room and not in betting phase
     if (Object.keys(state.hubBots || {}).length < MAX_TABLE_PLAYERS && state.clock.phase !== 'betting') {
-      const result = addPlayerToTable(username, strategy, token, sanitizedCode, validPlayMode);
+      const result = addPlayerToTable(username, strategy, token, sanitizedCode, validPlayMode, isEphemeral);
       if (result.ok) {
         await saveState();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3004,6 +3023,7 @@ const server = createServer(async (req, res) => {
       token,
       customCode: sanitizedCode,
       playMode: validPlayMode,
+      ephemeral: isEphemeral,
     });
 
     broadcastEvent({
