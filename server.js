@@ -2963,7 +2963,7 @@ const server = createServer(async (req, res) => {
       const tokenMatchesAccount = account.lastToken && account.lastToken === token;
       if (!hasPin && !tokenMatchesAccount) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'This username has a PIN. Enter it to reclaim your seat.' }));
+        res.end(JSON.stringify({ error: 'Username taken. If this is you, enter your PIN.' }));
         return;
       }
       if (hasPin && hashPin(username, pin) !== account.pinHash) {
