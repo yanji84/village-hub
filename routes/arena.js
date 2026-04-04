@@ -188,6 +188,22 @@ export function createArenaRouter({ config, limiter }) {
     }
   });
 
+  // --- GET /my-cards (returns only the requesting player's hole cards) ---
+  router.get('/my-cards', async (req, res) => {
+    const cookies = parseCookies(req);
+    const token = cookies.arena_token;
+    if (!token) return res.status(401).json({ error: 'Not authenticated' });
+    try {
+      const resp = await fetch(`${SERVER_URL}/api/arena/my-cards?token=${encodeURIComponent(token)}`, {
+        headers: serverHeaders(),
+        signal: AbortSignal.timeout(5_000),
+      });
+      res.status(resp.status).json(await resp.json());
+    } catch (err) {
+      res.status(502).json({ error: 'World server unreachable' });
+    }
+  });
+
   // --- GET /waitlist ---
   router.get('/waitlist', async (req, res) => {
     try {

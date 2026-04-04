@@ -466,7 +466,13 @@ function broadcastEvent(event) {
     if (recentTickDetails.length > RECENT_TICK_DETAILS_CAP) recentTickDetails.pop();
   }
 
-  const data = JSON.stringify(event);
+  // Strip hole card values from deal_hole when human players are at the table
+  let filtered = event;
+  if (event.action === 'deal_hole' && Object.values(state.hubBots || {}).some(b => b.playMode === 'human')) {
+    filtered = { ...event, cards: undefined, message: 'is dealt cards' };
+  }
+
+  const data = JSON.stringify(filtered);
   for (const obs of observers) {
     try {
       obs.res.write(`data: ${data}\n\n`);
@@ -2210,11 +2216,20 @@ const server = createServer(async (req, res) => {
       buyIns: state.buyIns || {},
       activePlayer: state.hand?.activePlayer || null,
       holeCards: (() => {
-        // Send current hole cards so observers see them after refresh
+        // Send current hole cards — hide actual values when human players are at the table
         const hc = {};
+        const hasHuman = Object.values(state.hubBots || {}).some(b => b.playMode === 'human');
         if (state.hand?.players) {
           for (const [botName, p] of Object.entries(state.hand.players)) {
-            if (p.cards) hc[botName] = p.cards;
+            if (p.cards) {
+              if (hasHuman && !p.folded && state.hand.street !== 'showdown' && !state.hand.result) {
+                // Human at table: mark as "has cards" but don't reveal values
+                // Client will show face-down for others, request own cards via cookie match
+                hc[botName] = true;
+              } else {
+                hc[botName] = p.cards;
+              }
+            }
           }
         }
         return hc;
@@ -2237,7 +2252,18 @@ const server = createServer(async (req, res) => {
       })(),
       gameStats: state.gameStats || {},
       gameStatsByTime: getRecentTimeBuckets(),
-      log: state.log.slice(-30),
+      log: (() => {
+        const recent = state.log.slice(-30);
+        const hasHuman = Object.values(state.hubBots || {}).some(b => b.playMode === 'human');
+        if (!hasHuman) return recent;
+        // Strip hole card values from deal_hole entries when humans are playing
+        return recent.map(e => {
+          if (e.action === 'deal_hole') {
+            return { ...e, cards: undefined, message: 'is dealt cards' };
+          }
+          return e;
+        });
+      })(),
       tickInProgress,
       observerCount: observers.size,
     };
@@ -2734,6 +2760,30 @@ const server = createServer(async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, seat }));
+    return;
+  }
+
+  // --- My cards endpoint (returns only the requesting player's hole cards) ---
+
+  if (path === '/api/arena/my-cards' && req.method === 'GET') {
+    const claimToken = url.searchParams.get('token') || parseCookies(req).arena_token;
+    if (!claimToken) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not authenticated' }));
+      return;
+    }
+    let botName = null;
+    for (const [name, hub] of Object.entries(state.hubBots || {})) {
+      if (hub.claimToken === claimToken) { botName = name; break; }
+    }
+    if (!botName || !state.hand?.players?.[botName]) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not in hand' }));
+      return;
+    }
+    const cards = state.hand.players[botName].cards || [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ cards, botName }));
     return;
   }
 
