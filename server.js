@@ -1234,19 +1234,38 @@ function recordPlayerHand(state, botName, handRecord) {
   const won = handRecord.result?.winners?.includes(botName);
   const profit = won ? (handRecord.pot - player.totalBet) : -(player.totalBet || 0);
 
+  // Build concise action summary per street
+  const streetActions = [];
+  let currentStreet = 'preflop';
+  const displayName = state.hubBots?.[botName]?.displayName || username || botName;
+  for (const a of handRecord.actions) {
+    if (a.action === 'deal_flop') currentStreet = 'flop';
+    else if (a.action === 'deal_turn') currentStreet = 'turn';
+    else if (a.action === 'deal_river') currentStreet = 'river';
+    if (a.bot === botName && !['deal_hole', 'deal_flop', 'deal_turn', 'deal_river', 'thought'].includes(a.action)) {
+      streetActions.push({ street: currentStreet, action: a.action, amount: a.amount || undefined });
+    }
+  }
+
+  // Winner info
+  const winnerBots = handRecord.result?.winners || [];
+  const winnerNames = winnerBots.map(w => state.hubBots?.[w]?.displayName || handRecord.players[w]?.displayName || w);
+  const handName = handRecord.result?.handName || null;
+  const playerCount = Object.keys(handRecord.players || {}).length;
+
   state.playerGameRecords[key].push({
     handNumber: handRecord.handNumber,
     timestamp: handRecord.timestamp,
     cards: player.cards,
     community: handRecord.community,
-    actions: handRecord.actions
-      .filter(a => a.visibility === 'public' || a.bot === botName)
-      .filter(a => a.action !== 'thought')
-      .map(a => ({ name: a.displayName || a.bot, action: a.action, amount: a.amount || undefined, message: a.message || undefined })),
+    streetActions,
     result: won ? 'win' : (player.folded ? 'fold' : 'loss'),
     profit,
     pot: handRecord.pot,
-    bluffWon: won && handRecord.result?.handName === 'Last player standing',
+    winner: winnerNames.join(', '),
+    handName: won ? handName : null,
+    playerCount,
+    bluffWon: won && handName === 'Last player standing',
     bluffCaught: !won && !player.folded && player.totalBet > 0,
   });
 
