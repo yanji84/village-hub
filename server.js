@@ -1239,7 +1239,10 @@ function recordPlayerHand(state, botName, handRecord) {
     timestamp: handRecord.timestamp,
     cards: player.cards,
     community: handRecord.community,
-    actions: handRecord.actions.filter(a => a.bot === botName).map(a => a.action),
+    actions: handRecord.actions
+      .filter(a => a.visibility === 'public' || a.bot === botName)
+      .filter(a => a.action !== 'thought')
+      .map(a => ({ name: a.displayName || a.bot, action: a.action, amount: a.amount || undefined, message: a.message || undefined })),
     result: won ? 'win' : (player.folded ? 'fold' : 'loss'),
     profit,
     pot: handRecord.pot,
