@@ -380,6 +380,7 @@ async function sendSceneLocal(botName, strategy, payload) {
       toCall: Math.max(0, (state.hand?.currentBet || 0) - (state.hand?.players?.[botName]?.bet || 0)),
       minRaise: Math.max((state.hand?.currentBet || 0) * 2, state.hand?.bigBlind || 20),
       chips: state.hand?.players?.[botName]?.chips || 0,
+      currentBet: state.hand?.players?.[botName]?.bet || 0,
     });
 
     // Wait for human input (60s timeout → auto-check if possible, else auto-fold)
@@ -2298,6 +2299,7 @@ const server = createServer(async (req, res) => {
             toCall: Math.max(0, (state.hand?.currentBet || 0) - (hp.bet || 0)),
             minRaise: Math.max((state.hand?.currentBet || 0) * 2, state.hand?.bigBlind || 20),
             chips: hp.chips || 0,
+            currentBet: hp.bet || 0,
           })}\n\n`);
         }
       }
