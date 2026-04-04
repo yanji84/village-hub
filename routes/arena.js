@@ -386,6 +386,46 @@ export function createArenaRouter({ config, limiter }) {
     }
   });
 
+  // --- POST /kick (remove seated player) ---
+  router.post('/kick', async (req, res) => {
+    const { botName, username } = req.body || {};
+    if (!botName && !username) return res.status(400).json({ error: 'Missing botName or username' });
+    try {
+      const resp = await fetch(`${SERVER_URL}/api/arena/kick`, {
+        method: 'POST',
+        headers: serverHeaders(),
+        body: JSON.stringify({ botName, username }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json(data);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(`[hub] arena kick failed: ${err.message}`);
+      res.status(502).json({ error: 'World server unreachable' });
+    }
+  });
+
+  // --- POST /kick-waitlist (remove from waitlist) ---
+  router.post('/kick-waitlist', async (req, res) => {
+    const { username } = req.body || {};
+    if (!username) return res.status(400).json({ error: 'Missing username' });
+    try {
+      const resp = await fetch(`${SERVER_URL}/api/arena/kick-waitlist`, {
+        method: 'POST',
+        headers: serverHeaders(),
+        body: JSON.stringify({ username }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json(data);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(`[hub] arena kick-waitlist failed: ${err.message}`);
+      res.status(502).json({ error: 'World server unreachable' });
+    }
+  });
+
   // --- GET /leaderboard ---
   router.get('/leaderboard', async (req, res) => {
     try {

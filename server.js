@@ -3122,6 +3122,80 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // --- Kick player by botName (table management) ---
+
+  if (path === '/api/arena/kick' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { botName, username } = body || {};
+
+    // Find bot by botName or username
+    let targetBot = botName;
+    if (!targetBot && username) {
+      for (const [name, bot] of Object.entries(state.hubBots || {})) {
+        if ((bot.displayName || '').toLowerCase() === username.toLowerCase() ||
+            (bot.username || '').toLowerCase() === username.toLowerCase()) {
+          targetBot = name;
+          break;
+        }
+      }
+    }
+
+    if (!targetBot || !state.hubBots?.[targetBot]) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Player not found' }));
+      return;
+    }
+
+    removePlayerFromTable(targetBot);
+    await saveState();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // --- Kick from waitlist by username ---
+
+  if (path === '/api/arena/kick-waitlist' && req.method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { username } = body || {};
+    if (!username) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing username' }));
+      return;
+    }
+
+    const idx = state.waitlist.findIndex(w => (w.username || '').toLowerCase() === username.toLowerCase());
+    if (idx === -1) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found in waitlist' }));
+      return;
+    }
+
+    state.waitlist.splice(idx, 1);
+    broadcastEvent({
+      type: 'waitlist_updated',
+      waitlist: state.waitlist.map(w => ({ username: w.username, joinedAt: w.joinedAt })),
+    });
+    await saveState();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // --- Login endpoint (returning users, no waitlist join) ---
 
   if (path === '/api/arena/login' && req.method === 'POST') {
