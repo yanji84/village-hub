@@ -3022,6 +3022,34 @@ const server = createServer(async (req, res) => {
     }
     // else: anonymous user (no PIN, no account) — can play but no persistence
 
+    // --- Enforce unique usernames (case-insensitive) ---
+    // Default bot display names are exempt (players can shadow them).
+    const defaultBotNames = new Set(HUB_BOT_DEFAULTS.map(d => d.displayName.toLowerCase()));
+
+    if (!defaultBotNames.has(userKey)) {
+      // 1. If a registered account exists and the user didn't provide a PIN,
+      //    we already rejected above (line ~2963). But guard against the case
+      //    where another *anonymous* session is using this name at the table.
+      const seatedByOther = Object.values(state.hubBots || {}).some(b =>
+        (b.claimedBy || b.displayName || '').toLowerCase() === userKey
+      );
+      if (seatedByOther) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Username is already at the table' }));
+        return;
+      }
+
+      // 2. Check waitlist for same username by a different token/session.
+      const queuedByOther = (state.waitlist || []).some(w =>
+        w.username.toLowerCase() === userKey && w.token !== token
+      );
+      if (queuedByOther) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Username is already in the waitlist' }));
+        return;
+      }
+    }
+
     // Validate playMode
     const validPlayMode = (playMode === 'human') ? 'human' : 'bot';
     const isEphemeral = !state.accounts?.[username.toLowerCase()];
