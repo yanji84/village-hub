@@ -1566,14 +1566,26 @@ function archiveHand(state) {
   };
 
   // Capture each player's info with starting chips
+  const winners = hand.result?.winners || [];
   for (const [botName, player] of Object.entries(hand.players || {})) {
     const hubBot = state.hubBots?.[botName];
+    const chipsStart = (player.chips || 0) + (player.totalBet || 0);
+    // Compute chipsEnd: start - bet + winnings (can't rely on state.buyIns timing)
+    let winnings = 0;
+    if (winners.includes(botName)) {
+      const share = Math.floor(hand.pot / winners.length);
+      winnings = share;
+      // First winner gets remainder from integer division
+      if (winners[0] === botName) {
+        winnings += hand.pot - share * winners.length;
+      }
+    }
     record.players[botName] = {
       displayName: hubBot?.displayName || botName,
       username: hubBot?.claimedBy || null,
       cards: player.cards,
-      chipsStart: (player.chips || 0) + (player.totalBet || 0), // chips before the hand
-      chipsEnd: state.buyIns[botName] ?? player.chips ?? 0,
+      chipsStart,
+      chipsEnd: chipsStart - (player.totalBet || 0) + winnings,
       totalBet: player.totalBet,
       folded: player.folded,
       strategy: hubBot?.strategy || null,
