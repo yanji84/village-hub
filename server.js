@@ -1566,17 +1566,13 @@ function archiveHand(state) {
   };
 
   // Capture each player's info
-  // Note: archiveHand runs after resolveHand, so state.buyIns already reflects
-  // pot distribution (including side pots). Use buyIns as authoritative chipsEnd,
-  // and derive chipsStart = buyIns + totalBet (pre-hand chips).
-  // This works because: buyIns = original - totalBet + winnings,
-  //   so buyIns + totalBet = original + winnings (not original).
-  // To get true original: original = buyIns + totalBet - winnings.
-  // But winnings are complex (side pots). Instead, we track chipsBeforeHand
-  // in the adapter (hand.chipsBeforeHand) and fall back to buyIns-based calc.
+  // Use player.chips as authoritative chipsEnd — resolveHand updates it directly
+  // with pot winnings. state.buyIns is used as fallback only.
+  // chipsStart comes from the pre-hand snapshot (chipsBeforeHand), which is
+  // captured at deal time before any blinds/bets.
   for (const [botName, player] of Object.entries(hand.players || {})) {
     const hubBot = state.hubBots?.[botName];
-    const chipsEnd = state.buyIns[botName] ?? player.chips ?? 0;
+    const chipsEnd = player.chips ?? state.buyIns[botName] ?? 0;
     const chipsStart = hand.chipsBeforeHand?.[botName] ?? (chipsEnd + (player.totalBet || 0));
     record.players[botName] = {
       displayName: hubBot?.displayName || botName,
