@@ -82,6 +82,11 @@ const TOURNAMENT_POINTS = [0, 10, 7, 5, 3, 2, 1]; // index = position (1st=10, 2
 const TOURNAMENT_AI_SEATS = 2;
 const TOURNAMENT_HUMAN_SEATS = 2;
 const TOURNAMENT_MAX_HISTORY = 20;
+const TOURNAMENT_BRACKET_SIZE = 16;       // 16 bots → 4 QF matches of 4 → 1 final of 4
+const TOURNAMENT_MATCH_PAUSE_MS = 10000;  // 10s pause between bracket matches
+// Bracket points: Champion=15, Finalist 2nd=10, 3rd=7, 4th=5, QF losers=1-3 by placement
+const BRACKET_POINTS_FINALIST = [0, 15, 10, 7, 5]; // index = final placement (1-4)
+const BRACKET_POINTS_QF_LOSER = [0, 3, 2, 1]; // index = QF elimination order within match (1st out=1pt, 2nd=2pt, 3rd=3pt)
 
 const TICK_INTERVAL_MS = parseInt(process.env.VILLAGE_TICK_INTERVAL || '120000', 10);
 const MIN_TICK_GAP_MS = parseInt(process.env.VILLAGE_MIN_TICK_GAP || '3000', 10); // minimum pause between ticks
@@ -187,7 +192,14 @@ function ensureRuntimeFields() {
     humanSeats: [],
     points: {},
     history: [],
+    bracket: null,
   };
+  // Migrate old tournament state: if phase is 'playing', reset to lobby
+  // (old format doesn't have bracket data, so a restart is safest)
+  if (state.tournament && state.tournament.phase === 'playing') {
+    state.tournament.phase = 'lobby';
+    state.tournament.bracket = null;
+  }
 }
 
 // --- Visibility helper ---
@@ -534,7 +546,7 @@ async function tick() {
     }
 
     // Remove busted players every tick during tournament (catches edge cases)
-    if (state.tournament?.phase === 'playing') {
+    if (state.tournament?.phase === 'quarterfinal' || state.tournament?.phase === 'final') {
       const busted = Object.keys(state.hubBots || {}).filter(b => (state.buyIns?.[b] || 0) === 0);
       for (const bName of busted) {
         removePlayerFromTable(bName);
@@ -961,7 +973,7 @@ function trackHandResultStats(state) {
   updateEloRatings(state);
 
   // Check if evolution is due (skip during tournament — evolution runs between tournaments)
-  if (state.tournament?.phase !== 'playing') {
+  if (state.tournament?.phase !== 'quarterfinal' && state.tournament?.phase !== 'final') {
     evolveStrategies().catch(err => console.error('[village] Evolution error:', err.message));
   }
 }
@@ -1158,6 +1170,7 @@ Reply with ONLY the strategy text, nothing else.`
 
 let _tournamentLobbyTimer = null;
 let _tournamentResultsTimer = null;
+let _bracketMatchPauseTimer = null;
 
 function ensureTournamentState() {
   if (!state.tournament) state.tournament = {
@@ -1171,11 +1184,18 @@ function ensureTournamentState() {
     humanSeats: [],
     points: {},
     history: [],
+    bracket: null,
   };
+  // Ensure bracket field exists on older state
+  if (state.tournament && state.tournament.bracket === undefined) {
+    state.tournament.bracket = null;
+  }
 }
 
 function startTournamentLobby() {
   ensureTournamentState();
+  // Clear any pending bracket match timer
+  if (_bracketMatchPauseTimer) { clearTimeout(_bracketMatchPauseTimer); _bracketMatchPauseTimer = null; }
   const t = state.tournament;
   t.number++;
   t.phase = 'lobby';
@@ -1201,33 +1221,43 @@ function startTournamentLobby() {
   }
   state.clock.phase = 'waiting';
 
-  // Select AI bots from BOT_POOL — mix of elite + random for fair rotation
-  // 1 elite (top by points) + rest random from remaining pool
-  let sortedPool = [...BOT_POOL];
-  const aiPicks = [];
-  if (Object.keys(t.points).length > 0 && TOURNAMENT_AI_SEATS > 1) {
-    // Pick 1 elite (best points)
-    sortedPool.sort((a, b) => {
-      const pA = t.points[a.name.toLowerCase()] || 0;
-      const pB = t.points[b.name.toLowerCase()] || 0;
-      return pB - pA;
-    });
-    aiPicks.push(sortedPool.shift());
-  }
-  // Fill remaining seats randomly from the rest
-  sortedPool.sort(() => Math.random() - 0.5);
-  while (aiPicks.length < TOURNAMENT_AI_SEATS && sortedPool.length > 0) {
-    aiPicks.push(sortedPool.shift());
-  }
-  for (const arch of aiPicks) {
+  // Select 16 bots from BOT_POOL for the bracket (shuffle all, take up to BRACKET_SIZE)
+  const shuffledPool = [...BOT_POOL].sort(() => Math.random() - 0.5);
+  const bracketBots = shuffledPool.slice(0, TOURNAMENT_BRACKET_SIZE);
+
+  // Store all bracket bot names as aiSeats for reference
+  for (const arch of bracketBots) {
     const botKey = 'player-' + arch.name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-    // Clear stale chip data
     delete state.buyIns?.[botKey];
     if (state.chipBank) delete state.chipBank[arch.name.toLowerCase()];
     t.aiSeats.push(arch.name);
   }
 
-  console.log(`[village] Tournament #${t.number} lobby started. AI seats: ${t.aiSeats.join(', ')}`);
+  // Divide into 4 groups of 4 for quarterfinal matches
+  const matchLabels = ['A', 'B', 'C', 'D'];
+  const matches = [];
+  for (let i = 0; i < 4; i++) {
+    const group = bracketBots.slice(i * 4, (i + 1) * 4);
+    matches.push({
+      id: matchLabels[i],
+      players: group.map(b => b.name),
+      winner: null,
+      placements: [], // ordered eliminations within this match
+    });
+  }
+
+  t.bracket = {
+    round: 1,           // 1 = quarterfinals, 2 = final
+    matches,
+    currentMatch: 0,    // index into matches array (0-3 for QF, 0 for final)
+    finalists: [],      // winners from round 1
+    champion: null,
+  };
+
+  console.log(`[village] Tournament #${t.number} bracket lobby started. ${bracketBots.length} bots in 4 QF groups.`);
+  for (let i = 0; i < matches.length; i++) {
+    console.log(`[village]   Match ${matches[i].id}: ${matches[i].players.join(', ')}`);
+  }
 
   broadcastEvent({
     type: 'tournament_lobby',
@@ -1235,6 +1265,18 @@ function startTournamentLobby() {
     countdown: TOURNAMENT_LOBBY_DURATION,
     aiPlayers: t.aiSeats,
     humanSlots: TOURNAMENT_HUMAN_SEATS,
+    bracket: {
+      round: 1,
+      matches: matches.map(m => ({ id: m.id, players: m.players })),
+    },
+    timestamp: new Date().toISOString(),
+  });
+
+  // Also broadcast bracket structure
+  broadcastEvent({
+    type: 'tournament_bracket',
+    number: t.number,
+    matches: matches.map(m => ({ id: m.id, players: m.players })),
     timestamp: new Date().toISOString(),
   });
 
@@ -1249,17 +1291,66 @@ function finishLobbyAndStartPlaying() {
   ensureTournamentState();
   const t = state.tournament;
   if (t.phase !== 'lobby') return;
-
-  // Seat the AI bots
-  for (const aiName of t.aiSeats) {
-    addPlayerToTable(aiName, BOT_POOL.find(b => b.name === aiName)?.strategy || DEFAULT_HUB_STRATEGY, `house-${aiName.toLowerCase()}-t${t.number}`);
+  if (!t.bracket || !t.bracket.matches || t.bracket.matches.length === 0) {
+    console.error('[village] No bracket matches set up — cannot start playing');
+    return;
   }
 
-  // Check if any humans joined from waitlist during lobby
-  // Humans in waitlist with playMode 'human' get priority for seats 5-6
+  // Start with first quarterfinal match
+  t.bracket.round = 1;
+  t.bracket.currentMatch = 0;
+  t.phase = 'quarterfinal';
+
+  seatBracketMatch();
+}
+
+/**
+ * Clear the table and seat the current bracket match's players.
+ * Used at the start of each QF match and the final.
+ */
+function seatBracketMatch() {
+  ensureTournamentState();
+  const t = state.tournament;
+  const bracket = t.bracket;
+
+  // Clear hand state BEFORE removing players
+  state.hand = null;
+  state.clock.phase = 'waiting';
+
+  // Clear table — remove all current players silently
+  const currentPlayers = Object.keys(state.hubBots || {});
+  for (const botName of currentPlayers) {
+    const hubBot = state.hubBots[botName];
+    const displayName = hubBot?.displayName || botName;
+    if (adapter.onLeave) adapter.onLeave(state, botName, displayName);
+    state.bots = state.bots.filter(b => b !== botName);
+    participants.delete(botName);
+    if (state.remoteParticipants) delete state.remoteParticipants[botName];
+    delete state.hubBots[botName];
+  }
+  state.clock.phase = 'waiting';
+
+  // Determine which players to seat
+  let playersToSeat;
+  if (bracket.round === 1) {
+    // Quarterfinal — seat match at currentMatch index
+    const match = bracket.matches[bracket.currentMatch];
+    playersToSeat = match.players;
+  } else {
+    // Final — seat the finalists
+    playersToSeat = bracket.finalists;
+  }
+
+  // Seat the players
+  for (const aiName of playersToSeat) {
+    const poolEntry = BOT_POOL.find(b => b.name === aiName);
+    addPlayerToTable(aiName, poolEntry?.strategy || DEFAULT_HUB_STRATEGY, `house-${aiName.toLowerCase()}-t${t.number}-r${bracket.round}-m${bracket.currentMatch}`);
+  }
+
+  // Try to seat humans from waitlist into available slots
   const humanWaitlist = (state.waitlist || []).filter(w => w.playMode === 'human');
   let humansSeated = 0;
-  while (humansSeated < TOURNAMENT_HUMAN_SEATS && humanWaitlist.length > 0) {
+  while (humansSeated < TOURNAMENT_HUMAN_SEATS && humanWaitlist.length > 0 && Object.keys(state.hubBots || {}).length < MAX_TABLE_PLAYERS) {
     const entry = humanWaitlist.shift();
     const idx = state.waitlist.indexOf(entry);
     if (idx !== -1) state.waitlist.splice(idx, 1);
@@ -1270,73 +1361,95 @@ function finishLobbyAndStartPlaying() {
     }
   }
 
-  // Also check non-human waitlist entries
-  while (humansSeated < TOURNAMENT_HUMAN_SEATS && state.waitlist?.length > 0) {
-    const entry = state.waitlist.shift();
-    const result = addPlayerToTable(entry.username, entry.strategy, entry.token, entry.customCode, entry.playMode, entry.ephemeral);
-    if (result.ok) {
-      t.humanSeats.push(entry.username);
-      humansSeated++;
-    }
-  }
-
-  // Backfill empty human seats with bots if no humans joined
-  const totalPlayers = Object.keys(state.hubBots || {}).length;
-  const slotsToFill = MAX_TABLE_PLAYERS - totalPlayers;
-  if (slotsToFill > 0) {
-    const existingNames = new Set(Object.values(state.hubBots || {}).map(b => b.displayName?.toLowerCase()));
-    const available = BOT_POOL.filter(a => !existingNames.has(a.name.toLowerCase()));
-    const shuffled = available.sort(() => Math.random() - 0.5);
-    for (let i = 0; i < slotsToFill && i < shuffled.length; i++) {
-      const arch = shuffled[i];
-      const botKey = 'player-' + arch.name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-      delete state.buyIns?.[botKey];
-      if (state.chipBank) delete state.chipBank[arch.name.toLowerCase()];
-      addPlayerToTable(arch.name, arch.strategy, `house-${arch.name.toLowerCase()}-t${t.number}-fill`);
-    }
-  }
-
   // Set all players to tournament starting chips
   for (const botName of Object.keys(state.hubBots || {})) {
     state.buyIns[botName] = TOURNAMENT_STARTING_CHIPS;
   }
 
-  t.phase = 'playing';
-
-  console.log(`[village] Tournament #${t.number} playing phase started. ${Object.keys(state.hubBots).length} players.`);
+  const roundLabel = bracket.round === 1 ? `QF Match ${bracket.matches[bracket.currentMatch]?.id}` : 'FINAL';
+  console.log(`[village] Tournament #${t.number} ${roundLabel} started. Players: ${playersToSeat.join(', ')}`);
 
   broadcastEvent({
     type: 'tournament_playing',
     number: t.number,
+    round: bracket.round,
+    roundLabel,
+    matchId: bracket.round === 1 ? bracket.matches[bracket.currentMatch]?.id : 'FINAL',
     players: Object.entries(state.hubBots || {}).map(([bn, hb]) => ({
       botName: bn,
       displayName: hb.displayName,
       isHuman: hb.playMode === 'human',
     })),
     startingChips: TOURNAMENT_STARTING_CHIPS,
+    bracket: getBracketSummary(),
     timestamp: new Date().toISOString(),
   });
 
   saveState();
 }
 
+/**
+ * Build a summary of the bracket state for SSE events.
+ */
+function getBracketSummary() {
+  const t = state.tournament;
+  if (!t?.bracket) return null;
+  const b = t.bracket;
+  return {
+    round: b.round,
+    currentMatch: b.currentMatch,
+    matches: b.matches.map(m => ({
+      id: m.id,
+      players: m.players,
+      winner: m.winner,
+      placements: m.placements,
+    })),
+    finalists: b.finalists,
+    champion: b.champion,
+  };
+}
+
 function recordTournamentElimination(botName) {
   ensureTournamentState();
   const t = state.tournament;
-  if (t.phase !== 'playing') return;
+  if (t.phase !== 'quarterfinal' && t.phase !== 'final') return;
 
   const hubBot = state.hubBots?.[botName];
   if (!hubBot) return;
 
   const remainingPlayers = Object.keys(state.hubBots || {}).filter(b => b !== botName).length;
-  const position = remainingPlayers + 1;
+  const position = remainingPlayers + 1; // position within this match
 
+  // Record in overall tournament placements
   t.placements.unshift({
     botName,
     displayName: hubBot.displayName || botName,
     position,
     isHuman: hubBot.playMode === 'human',
+    round: t.bracket?.round || 1,
+    matchId: t.bracket?.round === 1 ? t.bracket.matches[t.bracket.currentMatch]?.id : 'FINAL',
   });
+
+  // Record in the current bracket match's placements
+  if (t.bracket) {
+    if (t.bracket.round === 1) {
+      const match = t.bracket.matches[t.bracket.currentMatch];
+      if (match) {
+        match.placements.unshift({
+          botName,
+          displayName: hubBot.displayName || botName,
+          position,
+        });
+      }
+    } else if (t.bracket.round === 2) {
+      // Final match — track in a virtual "final" match entry
+      // (placements tracked in t.placements directly)
+    }
+  }
+
+  const roundLabel = t.phase === 'quarterfinal'
+    ? `QF-${t.bracket?.matches[t.bracket.currentMatch]?.id}`
+    : 'FINAL';
 
   broadcastEvent({
     type: 'tournament_elimination',
@@ -1345,34 +1458,125 @@ function recordTournamentElimination(botName) {
     displayName: hubBot.displayName || botName,
     position,
     remainingPlayers,
+    round: t.bracket?.round,
+    matchId: roundLabel,
+    bracket: getBracketSummary(),
     timestamp: new Date().toISOString(),
   });
 
-  console.log(`[village] Tournament #${t.number}: ${hubBot.displayName} eliminated in position ${position}`);
+  console.log(`[village] Tournament #${t.number} ${roundLabel}: ${hubBot.displayName} eliminated (pos ${position}, ${remainingPlayers} remain)`);
 }
 
+/**
+ * Check if the current bracket match has ended (1 player left).
+ * If so, advance to the next match, the final, or results.
+ * Returns true if the match just ended and state was advanced.
+ */
 function checkTournamentEnd() {
   ensureTournamentState();
   const t = state.tournament;
-  if (t.phase !== 'playing') return false;
+  if (t.phase !== 'quarterfinal' && t.phase !== 'final') return false;
 
   const activePlayers = Object.keys(state.hubBots || {});
-  if (activePlayers.length <= 1) {
-    // Tournament over — record winner
-    if (activePlayers.length === 1) {
-      const winnerBot = activePlayers[0];
-      const hubBot = state.hubBots[winnerBot];
+  if (activePlayers.length > 1) return false;
+
+  // Current match is over — record the winner
+  const winnerBot = activePlayers.length === 1 ? activePlayers[0] : null;
+  const winnerHubBot = winnerBot ? state.hubBots[winnerBot] : null;
+  const winnerDisplayName = winnerHubBot?.displayName || winnerBot || 'unknown';
+
+  if (t.phase === 'quarterfinal') {
+    const match = t.bracket.matches[t.bracket.currentMatch];
+    if (winnerBot && match) {
+      match.winner = winnerDisplayName;
+      match.placements.unshift({
+        botName: winnerBot,
+        displayName: winnerDisplayName,
+        position: 1,
+      });
+      t.bracket.finalists.push(winnerDisplayName);
+    }
+
+    console.log(`[village] Tournament #${t.number} QF Match ${match?.id} won by ${winnerDisplayName}`);
+
+    // Check if more QF matches remain
+    if (t.bracket.currentMatch < t.bracket.matches.length - 1) {
+      // More QF matches — advance after a pause
+      t.bracket.currentMatch++;
+      broadcastEvent({
+        type: 'tournament_match_complete',
+        number: t.number,
+        matchId: match?.id,
+        winner: winnerDisplayName,
+        nextMatch: t.bracket.matches[t.bracket.currentMatch]?.id,
+        bracket: getBracketSummary(),
+        timestamp: new Date().toISOString(),
+      });
+
+      // Pause then seat the next match
+      if (_bracketMatchPauseTimer) clearTimeout(_bracketMatchPauseTimer);
+      _bracketMatchPauseTimer = setTimeout(() => {
+        _bracketMatchPauseTimer = null;
+        seatBracketMatch();
+      }, TOURNAMENT_MATCH_PAUSE_MS);
+      return true;
+    }
+
+    // All QF matches done — advance to final
+    console.log(`[village] Tournament #${t.number} all QF matches complete. Finalists: ${t.bracket.finalists.join(', ')}`);
+    t.bracket.round = 2;
+    t.bracket.currentMatch = 0;
+    t.phase = 'final';
+
+    broadcastEvent({
+      type: 'tournament_match_complete',
+      number: t.number,
+      matchId: match?.id,
+      winner: winnerDisplayName,
+      nextMatch: 'FINAL',
+      finalists: t.bracket.finalists,
+      bracket: getBracketSummary(),
+      timestamp: new Date().toISOString(),
+    });
+
+    // Pause then seat the final
+    if (_bracketMatchPauseTimer) clearTimeout(_bracketMatchPauseTimer);
+    _bracketMatchPauseTimer = setTimeout(() => {
+      _bracketMatchPauseTimer = null;
+      seatBracketMatch();
+    }, TOURNAMENT_MATCH_PAUSE_MS);
+    return true;
+
+  } else if (t.phase === 'final') {
+    // Final is over — record champion
+    if (winnerBot) {
+      t.bracket.champion = winnerDisplayName;
       t.placements.unshift({
         botName: winnerBot,
-        displayName: hubBot?.displayName || winnerBot,
+        displayName: winnerDisplayName,
         position: 1,
-        isHuman: hubBot?.playMode === 'human',
+        isHuman: winnerHubBot?.playMode === 'human',
+        round: 2,
+        matchId: 'FINAL',
       });
     }
+
+    console.log(`[village] Tournament #${t.number} CHAMPION: ${winnerDisplayName}`);
+
+    broadcastEvent({
+      type: 'tournament_match_complete',
+      number: t.number,
+      matchId: 'FINAL',
+      winner: winnerDisplayName,
+      champion: winnerDisplayName,
+      bracket: getBracketSummary(),
+      timestamp: new Date().toISOString(),
+    });
 
     startTournamentResults();
     return true;
   }
+
   return false;
 }
 
@@ -1381,20 +1585,36 @@ function startTournamentResults() {
   const t = state.tournament;
   t.phase = 'results';
 
-  // Award points
+  // Award bracket-based points
+  // Finalists (round 2): Champion=15, 2nd=10, 3rd=7, 4th=5
+  // QF losers (round 1): 1-3 points based on elimination order within their match
   for (const placement of t.placements) {
-    const points = TOURNAMENT_POINTS[placement.position] || 0;
+    let points = 0;
+    if (placement.round === 2 || placement.matchId === 'FINAL') {
+      // Finalist — use final placement position
+      points = BRACKET_POINTS_FINALIST[placement.position] || 0;
+    } else {
+      // QF loser — eliminated in round 1
+      // position within match: 4=first out(1pt), 3=second out(2pt), 2=third out(3pt)
+      // Map: position 4→1pt, 3→2pt, 2→3pt (winner gets finalist points instead)
+      if (placement.position >= 2 && placement.position <= 4) {
+        const eliminationOrder = 5 - placement.position; // 4→1, 3→2, 2→3
+        points = BRACKET_POINTS_QF_LOSER[eliminationOrder] || 0;
+      }
+    }
     placement.points = points;
     const key = placement.displayName.toLowerCase();
     t.points[key] = (t.points[key] || 0) + points;
   }
 
-  const winner = t.placements.find(p => p.position === 1);
+  const champion = t.bracket?.champion || null;
+  const winner = t.placements.find(p => p.position === 1 && (p.round === 2 || p.matchId === 'FINAL'));
 
   // Add to history
   t.history.push({
     number: t.number,
-    winner: winner ? winner.displayName : null,
+    winner: champion,
+    bracket: getBracketSummary(),
     placements: [...t.placements],
     timestamp: new Date().toISOString(),
   });
@@ -1404,13 +1624,16 @@ function startTournamentResults() {
     t.history = t.history.slice(-TOURNAMENT_MAX_HISTORY);
   }
 
-  console.log(`[village] Tournament #${t.number} results: Winner=${winner?.displayName || 'none'}`);
+  console.log(`[village] Tournament #${t.number} results: Champion=${champion || 'none'}, Finalists=${t.bracket?.finalists?.join(', ') || 'none'}`);
 
   broadcastEvent({
     type: 'tournament_results',
     number: t.number,
     placements: t.placements,
-    winner: winner ? winner.displayName : null,
+    winner: champion,
+    champion,
+    finalists: t.bracket?.finalists || [],
+    bracket: getBracketSummary(),
     points: { ...t.points },
     timestamp: new Date().toISOString(),
   });
@@ -1431,144 +1654,153 @@ function startTournamentResults() {
 }
 
 async function runTournamentEvolution() {
-  // Tournament placement-driven evolution
-  // 1st = elite (preserved + breeds), 2nd = survivor (preserved)
-  // 3rd = child (crossover of 1st × 2nd), 4th = replaced (community or new child)
+  // 16-bot bracket evolution — tiered by placement
+  // TIER 1 (2 bots): Champion + Runner-up → preserved
+  // TIER 2 (2 bots): 3rd-4th finalists → crossover/mutant of champion
+  // TIER 3 (4 bots): QF 2nd place → crossover children of champion × runner-up
+  // TIER 4 (8 bots): QF 3rd-4th → replaced (community or new children)
   if (!state.evolution) return;
   const t = state.tournament;
   if (!t?.placements?.length) return;
 
-  console.log(`[village] Running tournament evolution (Gen ${state.evolution.generation + 1})`);
+  console.log(`[village] Running bracket evolution (Gen ${state.evolution.generation + 1})`);
   state.evolution.generation++;
   const gen = state.evolution.generation;
 
-  const STRATEGY_SUFFIX = '\nCRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.\nSHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.\nIMPORTANT: See at least 40% of flops for spectator entertainment.\nTable talk: Be creative and in-character.';
+  const STRATEGY_SUFFIX = '\nCRITICAL: NEVER say your actual hole cards in table talk. Hint, misdirect, or be vague.\nSHOWDOWN RULE: On the river, ALWAYS call with any pair or better. On earlier streets, call with any draw or pair.\nIMPORTANT: See at least 40% of flops for spectator entertainment.\nTable talk: Be creative and in-character.';
 
   const findPoolEntry = (botName) => {
     const displayName = (botName || '').replace('player-', '');
     return BOT_POOL.find(b => b.name.toLowerCase() === displayName.toLowerCase());
   };
 
-  // Get placements from this tournament (sorted by position)
-  const placements = [...t.placements].sort((a, b) => a.position - b.position);
-  const first = placements[0];  // 1st place — elite
-  const second = placements[1]; // 2nd place — survivor
-  const third = placements[2];  // 3rd place — gets replaced by child
-  const fourth = placements[3]; // 4th place — gets replaced
+  const setLineage = (botName, data) => {
+    if (!state.evolution.lineage) state.evolution.lineage = {};
+    state.evolution.lineage[botName] = { ...data, generation: gen };
+  };
 
-  const firstEntry = first ? findPoolEntry(first.botName) : null;
-  const secondEntry = second ? findPoolEntry(second.botName) : null;
-  const thirdEntry = third ? findPoolEntry(third.botName) : null;
-  const fourthEntry = fourth ? findPoolEntry(fourth.botName) : null;
+  // Categorize all 16 placements by tier
+  const allPlacements = [...t.placements].sort((a, b) => a.position - b.position);
+  const finalPlacements = allPlacements.filter(p => p.round === 2 || p.matchId === 'FINAL');
+  const qfPlacements = allPlacements.filter(p => p.round === 1 || (p.matchId && p.matchId !== 'FINAL'));
 
-  // Skip humans — don't evolve their strategies
-  const firstIsHuman = first?.isHuman;
-  const secondIsHuman = second?.isHuman;
+  // Finalists sorted by position (1st=champion, 2nd=runner-up, 3rd, 4th)
+  finalPlacements.sort((a, b) => a.position - b.position);
+  const champion = finalPlacements[0];
+  const runnerUp = finalPlacements[1];
+  const finalist3 = finalPlacements[2];
+  const finalist4 = finalPlacements[3];
 
-  // Elite parent strategies (for breeding)
-  const parentAStrategy = firstEntry?.strategy?.split('CRITICAL')[0]?.trim() || '';
-  const parentBStrategy = secondEntry?.strategy?.split('CRITICAL')[0]?.trim() || '';
+  const championEntry = champion ? findPoolEntry(champion.botName) : null;
+  const runnerUpEntry = runnerUp ? findPoolEntry(runnerUp.botName) : null;
+  const parentA = championEntry?.strategy?.split('CRITICAL')[0]?.trim() || '';
+  const parentB = runnerUpEntry?.strategy?.split('CRITICAL')[0]?.trim() || '';
 
-  // 1st place: ELITE — preserved, logged
-  if (firstEntry && !firstIsHuman) {
-    console.log(`[village] Evolution: ${firstEntry.name} is ELITE (1st place, Gen ${gen})`);
-    if (!state.evolution.lineage[first.botName]) state.evolution.lineage[first.botName] = {};
-    state.evolution.lineage[first.botName].status = 'elite';
-    state.evolution.lineage[first.botName].generation = gen;
-  }
-
-  // 2nd place: SURVIVOR — preserved, logged
-  if (secondEntry && !secondIsHuman) {
-    console.log(`[village] Evolution: ${secondEntry.name} survives (2nd place, Gen ${gen})`);
-    if (!state.evolution.lineage[second.botName]) state.evolution.lineage[second.botName] = {};
-    state.evolution.lineage[second.botName].status = 'survivor';
-    state.evolution.lineage[second.botName].generation = gen;
-  }
-
-  // 3rd place: CHILD — crossover of 1st × 2nd
-  if (thirdEntry && parentAStrategy && parentBStrategy) {
-    try {
-      const childStrategy = await evolveWithLLM(
-        `You are breeding a new poker strategy from two tournament winners.
-1st place: "${parentAStrategy}"
-2nd place: "${parentBStrategy}"
-Combine their best elements into a new strategy. Add one creative twist.
-3-4 sentences max. Reply with ONLY the strategy text.`
-      );
-      if (childStrategy && childStrategy.length > 20) {
-        thirdEntry.strategy = childStrategy.trim() + STRATEGY_SUFFIX;
-        console.log(`[village] Evolution: ${thirdEntry.name} is CHILD of ${firstEntry?.name || '?'} × ${secondEntry?.name || '?'} (Gen ${gen})`);
-        if (!state.evolution.lineage[third.botName]) state.evolution.lineage[third.botName] = {};
-        state.evolution.lineage[third.botName] = {
-          status: 'child', generation: gen,
-          parents: [firstEntry?.name, secondEntry?.name].filter(Boolean),
-          strategy: childStrategy.substring(0, 200),
-        };
+  // QF losers: 2nd place = almost won their group, 3rd-4th = bottom
+  const qf2nd = []; // QF runners-up (tier 3)
+  const qfBottom = []; // QF 3rd-4th (tier 4)
+  if (t.bracket?.matches) {
+    for (const match of t.bracket.matches) {
+      const placements = (match.placements || []).sort((a, b) => a.position - b.position);
+      for (const p of placements) {
+        if (p.botName === match.winner) continue; // winner is a finalist
+        if (p.position === 2) qf2nd.push(p);
+        else qfBottom.push(p);
       }
-    } catch (e) {
-      console.error(`[village] Evolution crossover failed: ${e.message}`);
     }
-    // Reset stats for new child
-    if (state.stats[third.botName]) state.stats[third.botName] = createEmptyStats();
   }
 
-  // 4th place: REPLACED — community submission or mutated child
-  if (fourthEntry) {
+  // --- TIER 1: Champion + Runner-up preserved ---
+  if (championEntry && !champion.isHuman) {
+    console.log(`[village] Evolution: ${championEntry.name} ELITE (champion, Gen ${gen})`);
+    setLineage(champion.botName, { status: 'elite' });
+  }
+  if (runnerUpEntry && !runnerUp?.isHuman) {
+    console.log(`[village] Evolution: ${runnerUpEntry.name} SURVIVOR (runner-up, Gen ${gen})`);
+    setLineage(runnerUp.botName, { status: 'survivor' });
+  }
+
+  // --- TIER 2: 3rd-4th finalists → crossover/mutant ---
+  for (const fin of [finalist3, finalist4]) {
+    if (!fin) continue;
+    const entry = findPoolEntry(fin.botName);
+    if (!entry || fin.isHuman) continue;
+    try {
+      const prompt = fin === finalist3
+        ? `Combine the best elements of these two tournament-winning poker strategies:\nChampion: "${parentA}"\nRunner-up: "${parentB}"\nCreate a new hybrid. 3-4 sentences max. Reply with ONLY the strategy text.`
+        : `This poker strategy won a tournament championship:\n"${parentA}"\nMake ONE meaningful change to create a strong variant. 3-4 sentences max. Reply with ONLY the strategy text.`;
+      const result = await evolveWithLLM(prompt);
+      if (result && result.length > 20) {
+        entry.strategy = result.trim() + STRATEGY_SUFFIX;
+        const status = fin === finalist3 ? 'child' : 'mutant';
+        console.log(`[village] Evolution: ${entry.name} is ${status.toUpperCase()} (Gen ${gen})`);
+        setLineage(fin.botName, { status, parents: [championEntry?.name, runnerUpEntry?.name].filter(Boolean), strategy: result.substring(0, 200) });
+      }
+    } catch (e) { console.error(`[village] Evolution tier 2 failed: ${e.message}`); }
+    if (state.stats[fin.botName]) state.stats[fin.botName] = createEmptyStats();
+  }
+
+  // --- TIER 3: QF 2nd place → crossover children ---
+  for (const qf of qf2nd) {
+    const entry = findPoolEntry(qf.botName);
+    if (!entry || qf.isHuman) continue;
+    try {
+      const result = await evolveWithLLM(
+        `Breed a new poker strategy from two champions:\nParent A: "${parentA}"\nParent B: "${parentB}"\nCreate something new — don't copy either parent exactly. Add a unique twist. 3-4 sentences. Reply with ONLY the strategy text.`
+      );
+      if (result && result.length > 20) {
+        entry.strategy = result.trim() + STRATEGY_SUFFIX;
+        console.log(`[village] Evolution: ${entry.name} is CROSSOVER child (Gen ${gen})`);
+        setLineage(qf.botName, { status: 'crossover', parents: [championEntry?.name, runnerUpEntry?.name].filter(Boolean), strategy: result.substring(0, 200) });
+      }
+    } catch (e) { console.error(`[village] Evolution tier 3 failed: ${e.message}`); }
+    if (state.stats[qf.botName]) state.stats[qf.botName] = createEmptyStats();
+  }
+
+  // --- TIER 4: QF 3rd-4th → replaced ---
+  for (const qf of qfBottom) {
+    const entry = findPoolEntry(qf.botName);
+    if (!entry || qf.isHuman) continue;
+
+    // Try community submission first
     const communityEntry = (state.waitlist || []).find(w => w.playMode !== 'human' && w.strategy);
     if (communityEntry) {
-      // Community submission takes the slot
-      fourthEntry.strategy = communityEntry.strategy + STRATEGY_SUFFIX;
+      entry.strategy = communityEntry.strategy + STRATEGY_SUFFIX;
       const idx = state.waitlist.indexOf(communityEntry);
       if (idx !== -1) state.waitlist.splice(idx, 1);
-      console.log(`[village] Evolution: ${fourthEntry.name} REPLACED by community submission from ${communityEntry.username} (Gen ${gen})`);
-      if (!state.evolution.lineage[fourth.botName]) state.evolution.lineage[fourth.botName] = {};
-      state.evolution.lineage[fourth.botName] = {
-        status: 'community', generation: gen,
-        author: communityEntry.username,
-        strategy: communityEntry.strategy.substring(0, 200),
-      };
-    } else if (parentAStrategy) {
-      // Mutated clone of the elite
+      console.log(`[village] Evolution: ${entry.name} REPLACED by community (${communityEntry.username}, Gen ${gen})`);
+      setLineage(qf.botName, { status: 'community', author: communityEntry.username, strategy: communityEntry.strategy.substring(0, 200) });
+    } else {
+      // Mutated clone of champion
       try {
-        const mutated = await evolveWithLLM(
-          `This poker strategy won a tournament:
-"${parentAStrategy}"
-Make ONE meaningful change to create a different but strong strategy.
-3-4 sentences max. Reply with ONLY the strategy text.`
+        const result = await evolveWithLLM(
+          `This poker strategy won a tournament:\n"${parentA}"\nCreate a DIFFERENT strategy inspired by it. Change the approach significantly while keeping what works. 3-4 sentences. Reply with ONLY the strategy text.`
         );
-        if (mutated && mutated.length > 20) {
-          fourthEntry.strategy = mutated.trim() + STRATEGY_SUFFIX;
-          console.log(`[village] Evolution: ${fourthEntry.name} is MUTANT of ${firstEntry?.name || '?'} (Gen ${gen})`);
-          if (!state.evolution.lineage[fourth.botName]) state.evolution.lineage[fourth.botName] = {};
-          state.evolution.lineage[fourth.botName] = {
-            status: 'mutant', generation: gen,
-            parents: [firstEntry?.name].filter(Boolean),
-            strategy: mutated.substring(0, 200),
-          };
+        if (result && result.length > 20) {
+          entry.strategy = result.trim() + STRATEGY_SUFFIX;
+          console.log(`[village] Evolution: ${entry.name} is NEW CHILD (Gen ${gen})`);
+          setLineage(qf.botName, { status: 'new_child', parents: [championEntry?.name].filter(Boolean), strategy: result.substring(0, 200) });
         }
-      } catch (e) {
-        console.error(`[village] Evolution mutation failed: ${e.message}`);
-      }
+      } catch (e) { console.error(`[village] Evolution tier 4 failed: ${e.message}`); }
     }
-    // Reset stats for replaced bot
-    if (state.stats[fourth.botName]) state.stats[fourth.botName] = createEmptyStats();
+    if (state.stats[qf.botName]) state.stats[qf.botName] = createEmptyStats();
   }
 
   broadcastEvent({
     type: 'evolution',
     generation: gen,
-    eliteName: firstEntry?.name || first?.displayName,
+    champion: championEntry?.name || champion?.displayName,
     timestamp: new Date().toISOString(),
   });
 
   await saveState();
-  console.log(`[village] Tournament evolution Gen ${gen} complete.`);
+  console.log(`[village] Bracket evolution Gen ${gen} complete. Champion DNA: ${championEntry?.name || '?'}`);
 }
 
 function isHumanSeatAvailable() {
   ensureTournamentState();
   const t = state.tournament;
-  if (t.phase !== 'playing') return false;
+  if (t.phase !== 'quarterfinal' && t.phase !== 'final') return false;
 
   // Count current human players
   const humanCount = Object.values(state.hubBots || {}).filter(b => b.playMode === 'human').length;
@@ -1889,7 +2121,7 @@ function checkTransitions(currentPhase) {
         archiveHand(state);
 
         // During tournament, skip session rotation (tournament handles player lifecycle)
-        if (state.tournament?.phase !== 'playing') {
+        if (state.tournament?.phase !== 'quarterfinal' && state.tournament?.phase !== 'final') {
           checkSessionRotation(state);
         }
 
@@ -1899,10 +2131,10 @@ function checkTransitions(currentPhase) {
           removePlayerFromTable(bName);
         }
 
-        // Check if tournament just ended
-        if (state.tournament?.phase === 'playing') {
+        // Check if tournament match just ended
+        if (state.tournament?.phase === 'quarterfinal' || state.tournament?.phase === 'final') {
           if (checkTournamentEnd()) {
-            // Tournament ended — don't do normal promote/backfill
+            // Match/tournament ended — don't do normal promote/backfill
             return;
           }
         }
@@ -1974,15 +2206,7 @@ SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold 
 IMPORTANT: See at least 50% of flops for spectator entertainment.
 Table talk: Friendly and chatty. "I just wanna see what happens!" Compliments everyone's plays.`,
   },
-  {
-    name: 'Phoenix',
-    strategy: `Comeback artist. Play tight early (25% of hands), but when your stack drops below half, switch to ultra-aggressive: shove all-in preflop with any ace, any pair, or any two face cards. When deep-stacked, play solid value poker.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 40% of flops for spectator entertainment.
-Table talk: Dramatic and emotional. "You can't keep me down!" Celebrates every win like a miracle.`,
-  },
-  {
+{
     name: 'Cobra',
     strategy: `Check-raise specialist. Play about 40% of hands. Your signature move: check the flop, let opponents bet, then raise big. Do this with strong hands AND draws. Post-flop aggression comes from check-raises, not leading out. Lead-bet only on the river.
 CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
@@ -1990,15 +2214,7 @@ SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold 
 IMPORTANT: See at least 40% of flops for spectator entertainment.
 Table talk: Sly and smirking. "Go ahead, bet. I dare you." Loves to needle.`,
   },
-  {
-    name: 'Frost',
-    strategy: `GTO balanced. Play 35% of hands. Bet 1/3 pot on dry boards with your entire range, 2/3 pot on wet boards with strong hands only. Balance bluffs at a 2:1 value-to-bluff ratio. Make decisions based on pot odds, not reads.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 40% of flops for spectator entertainment.
-Table talk: Analytical nerd. Quotes equity percentages. "That was a -EV call." Corrects everyone.`,
-  },
-  {
+{
     name: 'Dagger',
     strategy: `Short-stack bully. Play 40% of hands. Prefer small-ball preflop (2.2x raises) to preserve chips, but shove all-in postflop with any top pair or better. Use your all-in threat to pressure opponents. When deep, switch to standard aggression.
 CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
@@ -2022,31 +2238,7 @@ SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold 
 IMPORTANT: See at least 40% of flops for spectator entertainment.
 Table talk: Quiet observer. "I've been watching you." Makes opponents uncomfortable with specific reads.`,
   },
-  {
-    name: 'Blitz',
-    strategy: `Speed aggressor. Play 50% of hands and make decisions fast. Raise preflop, c-bet every flop, and barrel the turn. If you face resistance (a raise), fold immediately unless you have top pair+. Never slow-play — always bet your strong hands.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 50% of flops for spectator entertainment.
-Table talk: Impatient and high-energy. "Let's go, let's go!" Rushes everyone. Hates slow play.`,
-  },
-  {
-    name: 'Ember',
-    strategy: `Fit-or-fold straightforward. Play 35% of hands. Post-flop: bet with top pair or better, check-fold everything else. No bluffing, no slow-playing. Simple and predictable — but hard to bluff because you only continue with real hands.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 40% of flops for spectator entertainment.
-Table talk: Honest and earnest. "I only bet when I have it." Transparent but likable.`,
-  },
-  {
-    name: 'Titan',
-    strategy: `Big-bet bully. Play 40% of hands. Your signature: overbet the pot. When you bet, make it 1.5x-2x pot to maximize fold equity. Use your big bets to push people off hands. With the nuts, overbet for value too — opponents can't tell the difference.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 40% of flops for spectator entertainment.
-Table talk: Dominating presence. "Can you afford to call?" Pressures opponents psychologically.`,
-  },
-  {
+{
     name: 'Specter',
     strategy: `Float and steal. Play 40% of hands. Call flop bets in position with nothing (floating), then bet the turn when checked to. Steal pots on later streets rather than the flop. Patient — let opponents show weakness, then pounce.
 CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
@@ -2063,68 +2255,12 @@ IMPORTANT: See at least 35% of flops for spectator entertainment.
 Table talk: Sharp and observant. "I see everything from up here." Predatory metaphors.`,
   },
   {
-    name: 'Lotus',
-    strategy: `Zen-like patience with explosive moments. Play 30% of hands. Play passively most of the time — call, check, call. But when the pot is huge, make dramatic all-in moves. Save your aggression for the biggest pots where it matters most.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 35% of flops for spectator entertainment.
-Table talk: Calm philosopher. "The river reveals all truths." Serene even when losing.`,
-  },
-  {
-    name: 'Rex',
-    strategy: `Dominant table captain. Play 45% of hands. Raise every pot you enter. Take control of the betting — never let others dictate the action. If you raised preflop, always c-bet. If you c-bet, always barrel the turn. Relentless pressure.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 45% of flops for spectator entertainment.
-Table talk: Alpha energy. "This is MY table." Commands respect and demands attention.`,
-  },
-  {
-    name: 'Neon',
-    strategy: `Flashy gambler. Play 60% of hands. Chase every draw — flush draws, straight draws, even gutshots. Bet big when you hit. Speculative hands are your bread and butter: suited connectors, suited aces, one-gappers. Fold only unpaired offsuit junk.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 55% of flops for spectator entertainment.
-Table talk: Showboat. "Watch this!" Lives for the big moment. Celebrates wildly.`,
-  },
-  {
-    name: 'Sage',
-    strategy: `Old-school tight-passive. Play 25% of hands. Prefer calling to raising — see cheap flops with premiums, then bet only when you have the goods. Rarely bluff. When you raise, it means a monster. Predictable but solid.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 35% of flops for spectator entertainment.
-Table talk: Wise mentor. "Patience wins wars, young one." Gives unsolicited advice to everyone.`,
-  },
-  {
-    name: 'Fury',
-    strategy: `Unhinged aggression. Play 65% of hands. 3-bet preflop constantly. When someone raises, you re-raise. Post-flop, bet every street regardless of your hand. Your strategy is to make opponents afraid to play pots with you. Pure pressure.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 60% of flops for spectator entertainment.
-Table talk: Raging maniac. "ALL IN OR GO HOME!" Screams everything. Zero chill.`,
-  },
-  {
-    name: 'Zen',
-    strategy: `Balanced and unreadable. Play 35% of hands. Mix bet sizes randomly — sometimes 1/3 pot, sometimes full pot, with the same hand types. Alternate between checking strong hands and betting weak ones. Your goal: be impossible to read.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 40% of flops for spectator entertainment.
-Table talk: Calm paradoxes. "The winning move is not to play... but I'll play anyway." Cryptic.`,
-  },
-  {
     name: 'Onyx',
     strategy: `Value-betting machine. Play 35% of hands. Never bluff — only bet when you have at least top pair. But bet EVERY time you have it: flop, turn, river. Thin value bets on the river with second pair. Your opponents pay you off because you always have it.
 CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
 SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
 IMPORTANT: See at least 40% of flops for spectator entertainment.
 Table talk: Matter-of-fact. "I bet because I have a hand. Simple." Straightforward honesty.`,
-  },
-  {
-    name: 'Echo',
-    strategy: `Mimic opponent styles. Play 40% of hands. If your opponent is aggressive, play back aggressively. If passive, take control. Mirror their bet sizing. Adapt mid-hand to what they're doing. Be a chameleon — match and counter every style.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 40% of flops for spectator entertainment.
-Table talk: Parrot others' words back at them. "Didn't you just say that about me?" Mind games.`,
   },
   {
     name: 'Drift',
@@ -2141,22 +2277,6 @@ CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific r
 SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
 IMPORTANT: See at least 40% of flops for spectator entertainment.
 Table talk: Measured and precise. "No need to rush. The pot's fine where it is." Steady.`,
-  },
-  {
-    name: 'Atlas',
-    strategy: `Multi-street planner. Play 40% of hands. Before betting the flop, plan your turn and river actions. If you can't fire three streets, don't start. Bet with hands that can handle all three streets (top pair top kicker+, strong draws). Check everything else.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 40% of flops for spectator entertainment.
-Table talk: Strategic thinker. "I'm three streets ahead of you." Speaks in plans and contingencies.`,
-  },
-  {
-    name: 'Wren',
-    strategy: `Small-ball grinder. Play 45% of hands. Raise small (2x preflop), bet small (1/3 pot postflop). Win lots of small pots with frequent continuation bets. Avoid big pots without big hands. Death by a thousand cuts — chip away at opponents slowly.
-CRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.
-SHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.
-IMPORTANT: See at least 45% of flops for spectator entertainment.
-Table talk: Cheerful grinder. "Every chip counts!" Celebrates small wins. Unbothered by losses.`,
   },
 ];
 
@@ -2402,7 +2522,7 @@ function addPlayerToTable(username, strategy, token, customCode, playMode, ephem
   state.remoteParticipants[botName] = { displayName: username };
 
   // During tournament, give starting chips regardless of chipBank
-  if (state.tournament?.phase === 'playing' || state.tournament?.phase === 'lobby') {
+  if (state.tournament?.phase === 'quarterfinal' || state.tournament?.phase === 'final' || state.tournament?.phase === 'lobby') {
     if (!state.buyIns) state.buyIns = {};
     state.buyIns[botName] = TOURNAMENT_STARTING_CHIPS;
     if (state.chipBank) delete state.chipBank[username.toLowerCase()];
@@ -2448,8 +2568,8 @@ function removePlayerFromTable(botName) {
   const hubBot = state.hubBots?.[botName];
   if (!hubBot) return;
 
-  // Record tournament elimination if in playing phase and player is busted
-  if (state.tournament?.phase === 'playing') {
+  // Record tournament elimination if in quarterfinal/final phase and player is busted
+  if (state.tournament?.phase === 'quarterfinal' || state.tournament?.phase === 'final') {
     const chips = state.buyIns?.[botName] || 0;
     if (chips <= 0) {
       recordTournamentElimination(botName);
@@ -2492,8 +2612,8 @@ function promoteFromWaitlist() {
     return;
   }
 
-  // During tournament playing phase, only allow humans into empty human seats (5-6)
-  if (state.tournament?.phase === 'playing') {
+  // During tournament playing phase, only allow humans into empty human seats
+  if (state.tournament?.phase === 'quarterfinal' || state.tournament?.phase === 'final') {
     const humanWaitlist = (state.waitlist || []).filter(w => w.playMode === 'human');
     while (humanWaitlist.length > 0 && isHumanSeatAvailable() && Object.keys(state.hubBots).length < MAX_TABLE_PLAYERS) {
       const entry = humanWaitlist.shift();
@@ -3587,7 +3707,8 @@ const server = createServer(async (req, res) => {
     // Try to seat directly if table has room and not in betting phase
     if (Object.keys(state.hubBots || {}).length < MAX_TABLE_PLAYERS && state.clock.phase !== 'betting') {
       // During tournament playing, only allow humans into human seats
-      const canSeat = state.tournament?.phase === 'playing'
+      const inBracketPlay = state.tournament?.phase === 'quarterfinal' || state.tournament?.phase === 'final';
+      const canSeat = inBracketPlay
         ? (validPlayMode === 'human' && isHumanSeatAvailable())
         : true;
 
@@ -3595,7 +3716,7 @@ const server = createServer(async (req, res) => {
         const result = addPlayerToTable(username, strategy, token, sanitizedCode, validPlayMode, true);
         if (result.ok) {
           // Track human seat in tournament
-          if (state.tournament?.phase === 'playing' && validPlayMode === 'human') {
+          if (inBracketPlay && validPlayMode === 'human') {
             state.tournament.humanSeats.push(username);
           }
           await saveState();
@@ -4156,6 +4277,7 @@ function shutdown(signal) {
   if (tickTimer) clearTimeout(tickTimer);
   if (_tournamentLobbyTimer) clearTimeout(_tournamentLobbyTimer);
   if (_tournamentResultsTimer) clearTimeout(_tournamentResultsTimer);
+  if (_bracketMatchPauseTimer) clearTimeout(_bracketMatchPauseTimer);
 
   const waitForTick = () => {
     if (tickInProgress) {
@@ -4258,7 +4380,9 @@ server.listen(PORT, '127.0.0.1', () => {
   startTickLoop();
 
   // Start tournament lobby on first boot or if not currently in a tournament
-  if (!state.tournament?.phase || state.tournament.phase === 'lobby' || state.tournament.phase === 'results') {
+  // Also restart if mid-bracket (quarterfinal/final) since match state is lost on restart
+  if (!state.tournament?.phase || state.tournament.phase === 'lobby' || state.tournament.phase === 'results'
+      || state.tournament.phase === 'quarterfinal' || state.tournament.phase === 'final') {
     // Give a short delay to let connections establish, then start lobby
     setTimeout(() => {
       startTournamentLobby();
@@ -4277,7 +4401,7 @@ server.listen(PORT, '127.0.0.1', () => {
       state.hand = null;
       state.winner = null;
       // Give busted players fresh chips — but NOT during tournament (preserves elimination)
-      if (state.tournament?.phase !== 'playing') {
+      if (state.tournament?.phase !== 'quarterfinal' && state.tournament?.phase !== 'final') {
         for (const bot of (state.bots || [])) {
           if (!state.buyIns?.[bot] || state.buyIns[bot] <= 0) {
             state.buyIns[bot] = 1000;
