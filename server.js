@@ -1573,21 +1573,7 @@ function archiveHand(state) {
       username: hubBot?.claimedBy || null,
       cards: player.cards,
       chipsStart: (player.chips || 0) + (player.totalBet || 0), // chips before the hand
-      chipsEnd: (() => {
-        // Compute chipsEnd directly: start - bet + winnings
-        const start = (player.chips || 0) + (player.totalBet || 0);
-        const winners = hand.result?.winners || [];
-        let winnings = 0;
-        if (winners.includes(botName)) {
-          const share = Math.floor(hand.pot / winners.length);
-          winnings = share;
-          // First winner gets remainder
-          if (winners[0] === botName) {
-            winnings += hand.pot - share * winners.length;
-          }
-        }
-        return start - (player.totalBet || 0) + winnings;
-      })(),
+      chipsEnd: state.buyIns[botName] ?? player.chips ?? 0,
       totalBet: player.totalBet,
       folded: player.folded,
       strategy: hubBot?.strategy || null,
@@ -1596,8 +1582,15 @@ function archiveHand(state) {
 
   // Capture ALL actions from log including thoughts (for full replay)
   const handStartTick = hand.startTick;
+  let actionStreet = 'preflop';
   for (const entry of state.log) {
     if (entry.tick >= handStartTick) {
+      // Track street from deal messages so each action gets a street label
+      if (entry.action === 'deal' && entry.message) {
+        if (entry.message.includes('the flop')) actionStreet = 'flop';
+        else if (entry.message.includes('the turn')) actionStreet = 'turn';
+        else if (entry.message.includes('the river')) actionStreet = 'river';
+      }
       record.actions.push({
         bot: entry.bot,
         displayName: entry.displayName,
@@ -1606,6 +1599,7 @@ function archiveHand(state) {
         amount: entry.amount,
         tick: entry.tick,
         visibility: entry.visibility,
+        street: actionStreet,
       });
 
       // Also store thoughts on player object for quick access
@@ -4238,11 +4232,12 @@ server.listen(PORT, '127.0.0.1', () => {
       state.clock.phase = 'waiting';
       state.hand = null;
       state.winner = null;
-      // Give busted players fresh chips (use tournament chips if in tournament)
-      const chipAmount = state.tournament?.phase === 'playing' ? TOURNAMENT_STARTING_CHIPS : 1000;
-      for (const bot of (state.bots || [])) {
-        if (!state.buyIns?.[bot] || state.buyIns[bot] <= 0) {
-          state.buyIns[bot] = chipAmount;
+      // Give busted players fresh chips — but NOT during tournament (preserves elimination)
+      if (state.tournament?.phase !== 'playing') {
+        for (const bot of (state.bots || [])) {
+          if (!state.buyIns?.[bot] || state.buyIns[bot] <= 0) {
+            state.buyIns[bot] = 1000;
+          }
         }
       }
     } catch (e) {
