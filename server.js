@@ -3305,7 +3305,7 @@ const server = createServer(async (req, res) => {
       const vpip = handsPlayed > 0 ? ((handsPlayed - preflopFolds) / handsPlayed) * 100 : 0;
       const provisional = handsPlayed < 10;
 
-      return { bb100, winRate, showdownWinPct, aggressionFactor, vpip, chipProfit, provisional };
+      return { handsPlayed, bb100, winRate, showdownWinPct, aggressionFactor, vpip, chipProfit, provisional };
     }
 
     // Current table players
