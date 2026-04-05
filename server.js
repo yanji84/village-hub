@@ -1431,106 +1431,133 @@ function startTournamentResults() {
 }
 
 async function runTournamentEvolution() {
-  // Lightweight evolution between tournaments
-  // Uses the existing evolveStrategies logic but triggered by tournament end
-  if (!state.stats || !state.evolution) return;
+  // Tournament placement-driven evolution
+  // 1st = elite (preserved + breeds), 2nd = survivor (preserved)
+  // 3rd = child (crossover of 1st × 2nd), 4th = replaced (community or new child)
+  if (!state.evolution) return;
+  const t = state.tournament;
+  if (!t?.placements?.length) return;
 
-  console.log(`[village] Running inter-tournament evolution (Gen ${state.evolution.generation + 1})`);
-  state.evolution.lastEvolvedAt = state.gameStats?.totalHands || 0;
+  console.log(`[village] Running tournament evolution (Gen ${state.evolution.generation + 1})`);
   state.evolution.generation++;
   const gen = state.evolution.generation;
 
-  // Collect bot stats sorted by Elo
-  const allBots = [];
-  for (const [botName, stats] of Object.entries(state.stats)) {
-    if (stats.handsPlayed > 0) {
-      allBots.push({ botName, elo: stats.elo || 1200, hands: stats.handsPlayed, chipProfit: stats.chipProfit || 0 });
-    }
-  }
-  allBots.sort((a, b) => b.elo - a.elo);
-
-  if (allBots.length < 6) return; // not enough data
+  const STRATEGY_SUFFIX = '\nCRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.\nSHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.\nIMPORTANT: See at least 40% of flops for spectator entertainment.\nTable talk: Be creative and in-character.';
 
   const findPoolEntry = (botName) => {
-    const displayName = botName.replace('player-', '');
+    const displayName = (botName || '').replace('player-', '');
     return BOT_POOL.find(b => b.name.toLowerCase() === displayName.toLowerCase());
   };
 
-  // Top 2 survive (elite), middle 2 get mutated, bottom 2 get replaced
-  const top2 = allBots.slice(0, 2);
-  const mid2 = allBots.slice(2, 4);
-  const bottom2 = allBots.slice(-2);
+  // Get placements from this tournament (sorted by position)
+  const placements = [...t.placements].sort((a, b) => a.position - b.position);
+  const first = placements[0];  // 1st place — elite
+  const second = placements[1]; // 2nd place — survivor
+  const third = placements[2];  // 3rd place — gets replaced by child
+  const fourth = placements[3]; // 4th place — gets replaced
 
-  // Mutate middle 2
-  for (const mid of mid2) {
-    const entry = findPoolEntry(mid.botName);
-    if (!entry) continue;
-    const tweaked = await evolveWithLLM(
-      `This poker bot strategy has Elo ${mid.elo.toFixed(0)}. Make ONE small but meaningful change to improve it.
-Strategy: "${entry.strategy.split('CRITICAL')[0].trim()}"
-Rewrite with your improvement (3-4 sentences max). Keep what works, change one thing.
-Reply with ONLY the strategy text, nothing else.`
-    );
-    if (tweaked && tweaked.length > 20) {
-      entry.strategy = tweaked.trim() + '\nCRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.\nSHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.\nIMPORTANT: See at least 40% of flops for spectator entertainment.\nTable talk: Be creative and in-character.';
-      if (state.evolution.lineage[mid.botName]) {
-        state.evolution.lineage[mid.botName].status = 'mutated';
-        state.evolution.lineage[mid.botName].strategy = tweaked.substring(0, 200);
-      }
-      console.log(`[village] Tournament evolution: ${entry.name} mutated (Gen ${gen})`);
-    }
+  const firstEntry = first ? findPoolEntry(first.botName) : null;
+  const secondEntry = second ? findPoolEntry(second.botName) : null;
+  const thirdEntry = third ? findPoolEntry(third.botName) : null;
+  const fourthEntry = fourth ? findPoolEntry(fourth.botName) : null;
+
+  // Skip humans — don't evolve their strategies
+  const firstIsHuman = first?.isHuman;
+  const secondIsHuman = second?.isHuman;
+
+  // Elite parent strategies (for breeding)
+  const parentAStrategy = firstEntry?.strategy?.split('CRITICAL')[0]?.trim() || '';
+  const parentBStrategy = secondEntry?.strategy?.split('CRITICAL')[0]?.trim() || '';
+
+  // 1st place: ELITE — preserved, logged
+  if (firstEntry && !firstIsHuman) {
+    console.log(`[village] Evolution: ${firstEntry.name} is ELITE (1st place, Gen ${gen})`);
+    if (!state.evolution.lineage[first.botName]) state.evolution.lineage[first.botName] = {};
+    state.evolution.lineage[first.botName].status = 'elite';
+    state.evolution.lineage[first.botName].generation = gen;
   }
 
-  // Replace bottom 2
-  for (const bot of bottom2) {
-    const entry = findPoolEntry(bot.botName);
-    if (!entry) continue;
+  // 2nd place: SURVIVOR — preserved, logged
+  if (secondEntry && !secondIsHuman) {
+    console.log(`[village] Evolution: ${secondEntry.name} survives (2nd place, Gen ${gen})`);
+    if (!state.evolution.lineage[second.botName]) state.evolution.lineage[second.botName] = {};
+    state.evolution.lineage[second.botName].status = 'survivor';
+    state.evolution.lineage[second.botName].generation = gen;
+  }
 
-    // Check for community submissions in waitlist
+  // 3rd place: CHILD — crossover of 1st × 2nd
+  if (thirdEntry && parentAStrategy && parentBStrategy) {
+    try {
+      const childStrategy = await evolveWithLLM(
+        `You are breeding a new poker strategy from two tournament winners.
+1st place: "${parentAStrategy}"
+2nd place: "${parentBStrategy}"
+Combine their best elements into a new strategy. Add one creative twist.
+3-4 sentences max. Reply with ONLY the strategy text.`
+      );
+      if (childStrategy && childStrategy.length > 20) {
+        thirdEntry.strategy = childStrategy.trim() + STRATEGY_SUFFIX;
+        console.log(`[village] Evolution: ${thirdEntry.name} is CHILD of ${firstEntry?.name || '?'} × ${secondEntry?.name || '?'} (Gen ${gen})`);
+        if (!state.evolution.lineage[third.botName]) state.evolution.lineage[third.botName] = {};
+        state.evolution.lineage[third.botName] = {
+          status: 'child', generation: gen,
+          parents: [firstEntry?.name, secondEntry?.name].filter(Boolean),
+          strategy: childStrategy.substring(0, 200),
+        };
+      }
+    } catch (e) {
+      console.error(`[village] Evolution crossover failed: ${e.message}`);
+    }
+    // Reset stats for new child
+    if (state.stats[third.botName]) state.stats[third.botName] = createEmptyStats();
+  }
+
+  // 4th place: REPLACED — community submission or mutated child
+  if (fourthEntry) {
     const communityEntry = (state.waitlist || []).find(w => w.playMode !== 'human' && w.strategy);
     if (communityEntry) {
-      entry.strategy = communityEntry.strategy;
+      // Community submission takes the slot
+      fourthEntry.strategy = communityEntry.strategy + STRATEGY_SUFFIX;
       const idx = state.waitlist.indexOf(communityEntry);
       if (idx !== -1) state.waitlist.splice(idx, 1);
-      console.log(`[village] Tournament evolution: ${entry.name} replaced by community submission from ${communityEntry.username}`);
-    } else {
-      // Crossover from top 2
-      const parentA = top2[0];
-      const parentB = top2[1] || top2[0];
-      const parentAEntry = findPoolEntry(parentA.botName);
-      const parentBEntry = findPoolEntry(parentB.botName);
-      if (parentAEntry && parentBEntry) {
-        const childStrategy = await evolveWithLLM(
-          `Combine the best elements of these two winning poker strategies into a new one.
-Parent A (Elo ${parentA.elo.toFixed(0)}): "${parentAEntry.strategy.split('CRITICAL')[0].trim()}"
-Parent B (Elo ${parentB.elo.toFixed(0)}): "${parentBEntry.strategy.split('CRITICAL')[0].trim()}"
-Write a new poker strategy (3-4 sentences max). Add one creative twist. Do NOT copy the parents exactly.
-Reply with ONLY the strategy text, nothing else.`
+      console.log(`[village] Evolution: ${fourthEntry.name} REPLACED by community submission from ${communityEntry.username} (Gen ${gen})`);
+      if (!state.evolution.lineage[fourth.botName]) state.evolution.lineage[fourth.botName] = {};
+      state.evolution.lineage[fourth.botName] = {
+        status: 'community', generation: gen,
+        author: communityEntry.username,
+        strategy: communityEntry.strategy.substring(0, 200),
+      };
+    } else if (parentAStrategy) {
+      // Mutated clone of the elite
+      try {
+        const mutated = await evolveWithLLM(
+          `This poker strategy won a tournament:
+"${parentAStrategy}"
+Make ONE meaningful change to create a different but strong strategy.
+3-4 sentences max. Reply with ONLY the strategy text.`
         );
-        if (childStrategy && childStrategy.length > 20) {
-          entry.strategy = childStrategy.trim() + '\nCRITICAL: NEVER say your actual hole cards in table talk. Do NOT name specific ranks like "ace-king" or "pocket tens" if you actually hold them. Hint, misdirect, or be vague — saying your real cards kills the mystery and lets opponents fold.\nSHOWDOWN RULE: On the river, ALWAYS call with any pair or better — never fold a made hand on the river. On earlier streets, call with any draw or pair. Spectators want to see cards revealed at showdown.\nIMPORTANT: See at least 40% of flops for spectator entertainment.\nTable talk: Be creative and in-character.';
-          console.log(`[village] Tournament evolution: ${entry.name} evolved from ${parentAEntry.name} x ${parentBEntry.name} (Gen ${gen})`);
+        if (mutated && mutated.length > 20) {
+          fourthEntry.strategy = mutated.trim() + STRATEGY_SUFFIX;
+          console.log(`[village] Evolution: ${fourthEntry.name} is MUTANT of ${firstEntry?.name || '?'} (Gen ${gen})`);
+          if (!state.evolution.lineage[fourth.botName]) state.evolution.lineage[fourth.botName] = {};
+          state.evolution.lineage[fourth.botName] = {
+            status: 'mutant', generation: gen,
+            parents: [firstEntry?.name].filter(Boolean),
+            strategy: mutated.substring(0, 200),
+          };
         }
+      } catch (e) {
+        console.error(`[village] Evolution mutation failed: ${e.message}`);
       }
     }
-
     // Reset stats for replaced bot
-    if (state.stats[bot.botName]) {
-      state.stats[bot.botName] = createEmptyStats();
-    }
-  }
-
-  // Update elite lineage
-  for (const top of top2) {
-    if (state.evolution.lineage[top.botName]) {
-      state.evolution.lineage[top.botName].status = 'elite';
-      state.evolution.lineage[top.botName].elo = top.elo;
-    }
+    if (state.stats[fourth.botName]) state.stats[fourth.botName] = createEmptyStats();
   }
 
   broadcastEvent({
     type: 'evolution',
     generation: gen,
+    eliteName: firstEntry?.name || first?.displayName,
     timestamp: new Date().toISOString(),
   });
 
