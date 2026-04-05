@@ -1201,21 +1201,24 @@ function startTournamentLobby() {
   }
   state.clock.phase = 'waiting';
 
-  // Select 4 AI bots from BOT_POOL
-  // Prefer top strategies by tournament points if we have history
+  // Select AI bots from BOT_POOL — mix of elite + random for fair rotation
+  // 1 elite (top by points) + rest random from remaining pool
   let sortedPool = [...BOT_POOL];
-  if (Object.keys(t.points).length > 0) {
+  const aiPicks = [];
+  if (Object.keys(t.points).length > 0 && TOURNAMENT_AI_SEATS > 1) {
+    // Pick 1 elite (best points)
     sortedPool.sort((a, b) => {
       const pA = t.points[a.name.toLowerCase()] || 0;
       const pB = t.points[b.name.toLowerCase()] || 0;
       return pB - pA;
     });
-  } else {
-    // Random shuffle for first tournament
-    sortedPool.sort(() => Math.random() - 0.5);
+    aiPicks.push(sortedPool.shift());
   }
-
-  const aiPicks = sortedPool.slice(0, TOURNAMENT_AI_SEATS);
+  // Fill remaining seats randomly from the rest
+  sortedPool.sort(() => Math.random() - 0.5);
+  while (aiPicks.length < TOURNAMENT_AI_SEATS && sortedPool.length > 0) {
+    aiPicks.push(sortedPool.shift());
+  }
   for (const arch of aiPicks) {
     const botKey = 'player-' + arch.name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
     // Clear stale chip data
