@@ -1771,17 +1771,31 @@ async function runTournamentEvolution() {
       console.log(`[village] Evolution: ${entry.name} REPLACED by community (${communityEntry.username}, Gen ${gen})`);
       setLineage(qf.botName, { status: 'community', author: communityEntry.username, strategy: communityEntry.strategy.substring(0, 200) });
     } else {
-      // Mutated clone of champion
+      // Generate a completely novel strategy — maximize diversity
+      const archetypes = [
+        'ultra-aggressive maniac who raises every hand and overbets the pot',
+        'tight passive rock who only plays premium hands and traps with monsters',
+        'loose passive calling station who sees every flop and never folds pairs',
+        'balanced GTO-inspired player who mixes raises and checks at fixed frequencies',
+        'position-obsessed shark who plays 70% on the button but 15% from early position',
+        'all-in specialist who either folds or shoves, no in-between',
+        'small ball player who makes tiny bets to control pot size and see cheap showdowns',
+        'chaotic bluffer who bets big with nothing and checks with the nuts',
+      ];
+      const archetype = archetypes[Math.floor(Math.random() * archetypes.length)];
       try {
         const result = await evolveWithLLM(
-          `This poker strategy won a tournament:\n"${parentA}"\nCreate a DIFFERENT strategy inspired by it. Change the approach significantly while keeping what works. 3-4 sentences. Reply with ONLY the strategy text.`
+          `Invent a completely NEW poker strategy. The style: ${archetype}.
+Do NOT reference any existing strategy. Create something original and specific.
+Include: what hands to play, bet sizing, bluffing approach, and table talk personality.
+3-4 sentences max. Reply with ONLY the strategy text.`
         );
         if (result && result.length > 20) {
           entry.strategy = result.trim() + STRATEGY_SUFFIX;
-          console.log(`[village] Evolution: ${entry.name} is NEW CHILD (Gen ${gen})`);
-          setLineage(qf.botName, { status: 'new_child', parents: [championEntry?.name].filter(Boolean), strategy: result.substring(0, 200) });
+          console.log(`[village] Evolution: ${entry.name} is NOVEL (${archetype.split(' ').slice(0,3).join(' ')}, Gen ${gen})`);
+          setLineage(qf.botName, { status: 'novel', archetype, strategy: result.substring(0, 200) });
         }
-      } catch (e) { console.error(`[village] Evolution tier 4 failed: ${e.message}`); }
+      } catch (e) { console.error(`[village] Evolution tier 4 novel failed: ${e.message}`); }
     }
     if (state.stats[qf.botName]) state.stats[qf.botName] = createEmptyStats();
   }
