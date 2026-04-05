@@ -54,7 +54,7 @@ const WORLD_DIR = process.env.VILLAGE_WORLD_DIR
   || join(__dirname, 'worlds', VILLAGE_WORLD);
 const worldConfig = loadWorld(join(WORLD_DIR, 'schema.json'));
 const worldId = worldConfig.raw.id;
-const MAX_TABLE_PLAYERS = 6;
+const MAX_TABLE_PLAYERS = 4;
 console.log(`[village] Loaded world: ${worldId} (${worldConfig.raw.name})`);
 
 // --- Load adapter ---
