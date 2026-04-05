@@ -1777,6 +1777,14 @@ function updateEloRatings(state) {
   for (const [botName, profit] of Object.entries(profits)) {
     if (!state.stats[botName]) state.stats[botName] = createEmptyStats();
     state.stats[botName].chipProfit = (state.stats[botName].chipProfit || 0) + profit;
+
+    // Propagate chipProfit and elo to persistent playerStats
+    const claimedBy = state.hubBots?.[botName]?.claimedBy;
+    const playerKey = claimedBy ? claimedBy.toLowerCase() : null;
+    if (playerKey && state.playerStats?.[playerKey]) {
+      state.playerStats[playerKey].chipProfit = (state.playerStats[playerKey].chipProfit || 0) + profit;
+      state.playerStats[playerKey].elo = state.stats[botName].elo;
+    }
   }
 }
 
