@@ -1184,10 +1184,13 @@ function startTournamentLobby() {
   t.aiSeats = [];
   t.humanSeats = [];
 
+  // Clear hand state BEFORE removing players (prevents onLeave from calling advanceAction on dead hand)
+  state.hand = null;
+  state.clock.phase = 'waiting';
+
   // Clear table — remove all current players
   const currentPlayers = Object.keys(state.hubBots || {});
   for (const botName of currentPlayers) {
-    // Silently remove without triggering waitlist backfill
     const hubBot = state.hubBots[botName];
     const displayName = hubBot?.displayName || botName;
     if (adapter.onLeave) adapter.onLeave(state, botName, displayName);
@@ -1196,9 +1199,6 @@ function startTournamentLobby() {
     if (state.remoteParticipants) delete state.remoteParticipants[botName];
     delete state.hubBots[botName];
   }
-
-  // Reset hand state
-  state.hand = null;
   state.clock.phase = 'waiting';
 
   // Select 4 AI bots from BOT_POOL
