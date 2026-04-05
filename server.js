@@ -1678,12 +1678,15 @@ function recordPlayerHand(state, botName, handRecord) {
   // Build concise action summary per street
   const streetActions = [];
   let currentStreet = 'preflop';
-  const displayName = state.hubBots?.[botName]?.displayName || username || botName;
+  const pokerActions = new Set(['blind', 'call', 'raise', 'check', 'fold', 'allin']);
   for (const a of handRecord.actions) {
-    if (a.action === 'deal_flop') currentStreet = 'flop';
-    else if (a.action === 'deal_turn') currentStreet = 'turn';
-    else if (a.action === 'deal_river') currentStreet = 'river';
-    if (a.bot === botName && !['deal_hole', 'deal_flop', 'deal_turn', 'deal_river', 'thought'].includes(a.action)) {
+    // Street detection: deal actions use action='deal' with message like "deals the flop/turn/river:"
+    if (a.action === 'deal' && a.message) {
+      if (a.message.includes('the flop')) currentStreet = 'flop';
+      else if (a.message.includes('the turn')) currentStreet = 'turn';
+      else if (a.message.includes('the river')) currentStreet = 'river';
+    }
+    if (a.bot === botName && pokerActions.has(a.action)) {
       streetActions.push({ street: currentStreet, action: a.action, amount: a.amount || undefined });
     }
   }
@@ -1691,8 +1694,12 @@ function recordPlayerHand(state, botName, handRecord) {
   // Winner info
   const winnerBots = handRecord.result?.winners || [];
   const winnerNames = winnerBots.map(w => state.hubBots?.[w]?.displayName || handRecord.players[w]?.displayName || w);
-  const handName = handRecord.result?.handName || null;
+  const winningHandName = handRecord.result?.handName || null;
   const playerCount = Object.keys(handRecord.players || {}).length;
+
+  // Find this player's hand evaluation (from showdown evaluations)
+  const playerEval = handRecord.result?.evaluations?.find(e => e.botName === botName);
+  const playerHandName = won ? winningHandName : (player.folded ? null : (playerEval?.hand || null));
 
   state.playerGameRecords[key].push({
     handNumber: handRecord.handNumber,
@@ -1704,9 +1711,9 @@ function recordPlayerHand(state, botName, handRecord) {
     profit,
     pot: handRecord.pot,
     winner: winnerNames.join(', '),
-    handName: won ? handName : null,
+    handName: playerHandName,
     playerCount,
-    bluffWon: won && handName === 'Last player standing',
+    bluffWon: won && winningHandName === 'Last player standing',
     bluffCaught: !won && !player.folded && player.totalBet > 0,
   });
 
@@ -3815,7 +3822,9 @@ const server = createServer(async (req, res) => {
       const handsWon = stats.handsWon || 0;
       const totalChipsWon = stats.totalChipsWon || 0;
       const totalChipsLost = stats.totalChipsLost || 0;
-      const chipProfit = totalChipsWon - totalChipsLost;
+      // Use tracked net chipProfit (per-hand profit accumulation) — NOT totalChipsWon - totalChipsLost,
+      // because totalChipsWon includes the winner's own bet back (gross pot share), inflating the number.
+      const chipProfit = stats.chipProfit || 0;
       const showdownsReached = stats.showdownsReached || 0;
       const showdownsWon = stats.showdownsWon || 0;
       const calls = stats.calls || 0;
