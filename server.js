@@ -2139,8 +2139,10 @@ function checkTransitions(currentPhase) {
           checkSessionRotation(state);
         }
 
-        // Remove busted players (0 chips) after showdown
-        const bustedPlayers = Object.keys(state.hubBots || {}).filter(b => (state.buyIns?.[b] || 0) === 0);
+        // Remove busted players (0 chips) after showdown — skip players already removed (e.g. disconnected mid-hand)
+        const bustedPlayers = Object.keys(state.hubBots || {}).filter(b =>
+          (state.buyIns?.[b] || 0) === 0 && state.bots.includes(b)
+        );
         for (const bName of bustedPlayers) {
           removePlayerFromTable(bName);
         }
