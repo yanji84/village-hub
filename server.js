@@ -533,6 +533,21 @@ async function tick() {
       return;
     }
 
+    // Remove busted players every tick during tournament (catches edge cases)
+    if (state.tournament?.phase === 'playing') {
+      const busted = Object.keys(state.hubBots || {}).filter(b => (state.buyIns?.[b] || 0) === 0);
+      for (const bName of busted) {
+        removePlayerFromTable(bName);
+      }
+      if (busted.length > 0 && checkTournamentEnd()) {
+        await saveState();
+        tickInProgress = false;
+        tickStartedAt = 0;
+        scheduleNextTick();
+        return;
+      }
+    }
+
     const phase = adapterPhases[state.clock.phase];
     if (!phase) {
       console.error(`[village] Unknown phase "${state.clock.phase}", resetting to "${initialPhase}"`);
