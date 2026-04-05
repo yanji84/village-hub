@@ -3283,11 +3283,36 @@ const server = createServer(async (req, res) => {
   if (path === '/api/arena/leaderboard' && req.method === 'GET') {
     const entries = [];
     const seen = new Set();
+    const BIG_BLIND = 80;
+
+    function computePokerMetrics(stats) {
+      const handsPlayed = stats.handsPlayed || 0;
+      const handsWon = stats.handsWon || 0;
+      const totalChipsWon = stats.totalChipsWon || 0;
+      const totalChipsLost = stats.totalChipsLost || 0;
+      const chipProfit = totalChipsWon - totalChipsLost;
+      const showdownsReached = stats.showdownsReached || 0;
+      const showdownsWon = stats.showdownsWon || 0;
+      const calls = stats.calls || 0;
+      const raises = stats.raises || 0;
+      const allIns = stats.allIns || 0;
+      const preflopFolds = stats.preflopFolds || 0;
+
+      const bb100 = handsPlayed > 0 ? (chipProfit / handsPlayed) / BIG_BLIND * 100 : 0;
+      const winRate = handsPlayed > 0 ? (handsWon / handsPlayed) * 100 : 0;
+      const showdownWinPct = showdownsReached > 0 ? (showdownsWon / showdownsReached) * 100 : 0;
+      const aggressionFactor = (raises + allIns) / (calls || 1);
+      const vpip = handsPlayed > 0 ? ((handsPlayed - preflopFolds) / handsPlayed) * 100 : 0;
+      const provisional = handsPlayed < 10;
+
+      return { bb100, winRate, showdownWinPct, aggressionFactor, vpip, chipProfit, provisional };
+    }
 
     // Current table players
     for (const [botName, hubBot] of Object.entries(state.hubBots || {})) {
       seen.add(botName);
       const stats = state.stats?.[botName] || createEmptyStats();
+      const metrics = computePokerMetrics(stats);
       entries.push({
         botName,
         displayName: hubBot.displayName || botName,
@@ -3297,6 +3322,7 @@ const server = createServer(async (req, res) => {
         stats,
         score: computeScore(stats),
         atTable: true,
+        ...metrics,
       });
     }
 
@@ -3304,6 +3330,7 @@ const server = createServer(async (req, res) => {
     for (const [botName, stats] of Object.entries(state.stats || {})) {
       if (seen.has(botName) || !stats.handsPlayed) continue;
       seen.add(botName);
+      const metrics = computePokerMetrics(stats);
       entries.push({
         botName,
         displayName: stats.username || botName.replace('player-', ''),
@@ -3313,15 +3340,17 @@ const server = createServer(async (req, res) => {
         stats,
         score: computeScore(stats),
         atTable: false,
+        ...metrics,
       });
     }
 
-    entries.sort((a, b) => (b.stats?.elo || 1200) - (a.stats?.elo || 1200));
+    // Sort by bb100 descending (highest profit rate first)
+    entries.sort((a, b) => b.bb100 - a.bb100);
 
     // Persistent player rankings across all sessions
     const playerRankings = Object.values(state.playerStats || {})
-      .map(ps => ({ ...ps, score: computeScore(ps) }))
-      .sort((a, b) => (b.elo || 1200) - (a.elo || 1200));
+      .map(ps => ({ ...ps, score: computeScore(ps), ...computePokerMetrics(ps) }))
+      .sort((a, b) => b.bb100 - a.bb100);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
