@@ -1565,27 +1565,25 @@ function archiveHand(state) {
     dealerIndex: hand.dealerIndex,
   };
 
-  // Capture each player's info with starting chips
-  const winners = hand.result?.winners || [];
+  // Capture each player's info
+  // Note: archiveHand runs after resolveHand, so state.buyIns already reflects
+  // pot distribution (including side pots). Use buyIns as authoritative chipsEnd,
+  // and derive chipsStart = buyIns + totalBet (pre-hand chips).
+  // This works because: buyIns = original - totalBet + winnings,
+  //   so buyIns + totalBet = original + winnings (not original).
+  // To get true original: original = buyIns + totalBet - winnings.
+  // But winnings are complex (side pots). Instead, we track chipsBeforeHand
+  // in the adapter (hand.chipsBeforeHand) and fall back to buyIns-based calc.
   for (const [botName, player] of Object.entries(hand.players || {})) {
     const hubBot = state.hubBots?.[botName];
-    const chipsStart = (player.chips || 0) + (player.totalBet || 0);
-    // Compute chipsEnd: start - bet + winnings (can't rely on state.buyIns timing)
-    let winnings = 0;
-    if (winners.includes(botName)) {
-      const share = Math.floor(hand.pot / winners.length);
-      winnings = share;
-      // First winner gets remainder from integer division
-      if (winners[0] === botName) {
-        winnings += hand.pot - share * winners.length;
-      }
-    }
+    const chipsEnd = state.buyIns[botName] ?? player.chips ?? 0;
+    const chipsStart = hand.chipsBeforeHand?.[botName] ?? (chipsEnd + (player.totalBet || 0));
     record.players[botName] = {
       displayName: hubBot?.displayName || botName,
       username: hubBot?.claimedBy || null,
       cards: player.cards,
       chipsStart,
-      chipsEnd: chipsStart - (player.totalBet || 0) + winnings,
+      chipsEnd,
       totalBet: player.totalBet,
       folded: player.folded,
       strategy: hubBot?.strategy || null,
