@@ -124,7 +124,7 @@ export function createArenaRouter({ config, limiter }) {
     if (playMode !== 'human' && (typeof strategy !== 'string' || strategy.trim().length === 0)) {
       return res.status(400).json({ error: 'Strategy is required' });
     }
-    if (strategy.length > 2000) {
+    if (typeof strategy === 'string' && strategy.length > 2000) {
       return res.status(400).json({ error: 'Strategy must be 2000 chars or less' });
     }
     if (customCode && typeof customCode === 'string' && customCode.length > 5000) {

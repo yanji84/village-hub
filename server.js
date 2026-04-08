@@ -3623,10 +3623,16 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // Validate strategy
-    if (typeof strategy !== 'string' || strategy.length > 2000) {
+    // Validate strategy (humans don't submit a strategy)
+    const isHuman = (playMode === 'human');
+    if (!isHuman && typeof strategy !== 'string') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Strategy must be a string of 2000 chars or less' }));
+      res.end(JSON.stringify({ error: 'Strategy is required' }));
+      return;
+    }
+    if (typeof strategy === 'string' && strategy.length > 2000) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Strategy must be 2000 chars or less' }));
       return;
     }
 
