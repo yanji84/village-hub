@@ -1226,14 +1226,17 @@ function startTournamentLobby() {
     participants.delete(botName);
     if (state.remoteParticipants) delete state.remoteParticipants[botName];
     delete state.hubBots[botName];
-    // Notify observers so their bot list / seat caches don't accumulate ghosts
-    broadcastEvent({
-      type: 'player_left',
-      botName,
-      displayName,
-      playerCount: Object.keys(state.hubBots).length,
-      maxPlayers: MAX_TABLE_PLAYERS,
-    });
+    // Notify observers so their bot list / seat caches don't accumulate ghosts.
+    // Suppress for humans that will be re-queued — otherwise they flicker off/on.
+    if (!isHuman || !savedToken) {
+      broadcastEvent({
+        type: 'player_left',
+        botName,
+        displayName,
+        playerCount: Object.keys(state.hubBots).length,
+        maxPlayers: MAX_TABLE_PLAYERS,
+      });
+    }
     // Re-queue humans so the next tournament seats them automatically
     if (isHuman && savedToken && !(state.waitlist || []).some(w => w.token === savedToken)) {
       if (!state.waitlist) state.waitlist = [];
@@ -1346,16 +1349,47 @@ function seatBracketMatch() {
   state.hand = null;
   state.clock.phase = 'waiting';
 
-  // Clear table — remove all current players silently
+  // Clear table — remove all current players. Humans are re-queued onto the
+  // waitlist so the next match's seating pass picks them up automatically;
+  // otherwise they would visibly disappear between every QF match.
   const currentPlayers = Object.keys(state.hubBots || {});
   for (const botName of currentPlayers) {
     const hubBot = state.hubBots[botName];
     const displayName = hubBot?.displayName || botName;
+    const isHuman = hubBot?.playMode === 'human';
+    const username = hubBot?.claimedBy || displayName;
+    const savedToken = hubBot?.claimToken;
+    const savedStrategy = hubBot?.strategy;
+    const savedCode = hubBot?.customCode || null;
+    const savedEphemeral = !!hubBot?.ephemeral;
     if (adapter.onLeave) adapter.onLeave(state, botName, displayName);
     state.bots = state.bots.filter(b => b !== botName);
     participants.delete(botName);
     if (state.remoteParticipants) delete state.remoteParticipants[botName];
     delete state.hubBots[botName];
+    // Suppress player_left broadcasts for humans that will be re-queued
+    // immediately — otherwise observers flicker them off/on between matches.
+    if (!isHuman || !savedToken) {
+      broadcastEvent({
+        type: 'player_left',
+        botName,
+        displayName,
+        playerCount: Object.keys(state.hubBots).length,
+        maxPlayers: MAX_TABLE_PLAYERS,
+      });
+    }
+    if (isHuman && savedToken && !(state.waitlist || []).some(w => w.token === savedToken)) {
+      if (!state.waitlist) state.waitlist = [];
+      state.waitlist.push({
+        username,
+        strategy: savedStrategy || 'Human player',
+        joinedAt: new Date().toISOString(),
+        token: savedToken,
+        customCode: savedCode,
+        playMode: 'human',
+        ephemeral: savedEphemeral,
+      });
+    }
   }
   state.clock.phase = 'waiting';
 
