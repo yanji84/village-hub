@@ -1377,17 +1377,9 @@ function seatBracketMatch() {
     participants.delete(botName);
     if (state.remoteParticipants) delete state.remoteParticipants[botName];
     delete state.hubBots[botName];
-    // Suppress player_left broadcasts for humans that will be re-queued
-    // immediately — otherwise observers flicker them off/on between matches.
-    if (!isHuman || !savedToken) {
-      broadcastEvent({
-        type: 'player_left',
-        botName,
-        displayName,
-        playerCount: Object.keys(state.hubBots).length,
-        maxPlayers: MAX_TABLE_PLAYERS,
-      });
-    }
+    // Intentionally no player_left broadcast here — the observer rebuilds
+    // state.bots atomically from the tournament_playing event fired at the
+    // end of seatBracketMatch, which is the authoritative new-match roster.
     if (isHuman && savedToken && !(state.waitlist || []).some(w => w.token === savedToken)) {
       if (!state.waitlist) state.waitlist = [];
       state.waitlist.push({
