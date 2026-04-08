@@ -545,9 +545,19 @@ async function tick() {
       return;
     }
 
-    // Remove busted players every tick during tournament (catches edge cases)
+    // Remove busted players every tick during tournament (catches edge cases).
+    // Skip players who are still active in an unresolved hand — e.g. a player
+    // who just went all-in has 0 chips but their bet is in the pot and they
+    // are still eligible to win at showdown. Removing them mid-hand produces
+    // spurious "X leaves the table" log spam and confuses the resolution.
     if (state.tournament?.phase === 'quarterfinal' || state.tournament?.phase === 'final') {
-      const busted = Object.keys(state.hubBots || {}).filter(b => (state.buyIns?.[b] || 0) === 0);
+      const inLiveHand = (bName) => {
+        const hp = state.hand?.players?.[bName];
+        return hp && !hp.folded && !state.hand?.result;
+      };
+      const busted = Object.keys(state.hubBots || {}).filter(b =>
+        (state.buyIns?.[b] || 0) === 0 && !inLiveHand(b)
+      );
       for (const bName of busted) {
         removePlayerFromTable(bName);
       }
