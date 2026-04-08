@@ -3018,6 +3018,20 @@ const server = createServer(async (req, res) => {
         }
         return out;
       })(),
+      blindPositions: (() => {
+        // Authoritative SB/BB positions so indicators survive a refresh
+        // even if the preflop blind actions aged out of the log slice.
+        const h = state.hand;
+        if (!h?.seats || h.seats.length < 2 || h.dealerIndex == null) return null;
+        const n = h.seats.length;
+        const sbIdx = n === 2 ? h.dealerIndex : (h.dealerIndex + 1) % n;
+        const bbIdx = (sbIdx + 1) % n;
+        return {
+          smallBlind: h.seats[sbIdx]?.botName || null,
+          bigBlind: h.seats[bbIdx]?.botName || null,
+          dealer: h.seats[h.dealerIndex]?.botName || null,
+        };
+      })(),
       maxPlayers: MAX_TABLE_PLAYERS,
       playerCount: Object.keys(state.hubBots || {}).length,
       handsPlayed: state.handsPlayed || 0,
