@@ -54,7 +54,7 @@ const WORLD_DIR = process.env.VILLAGE_WORLD_DIR
   || join(__dirname, 'worlds', VILLAGE_WORLD);
 const worldConfig = loadWorld(join(WORLD_DIR, 'schema.json'));
 const worldId = worldConfig.raw.id;
-const MAX_TABLE_PLAYERS = 4;
+const MAX_TABLE_PLAYERS = 6; // 4 AI bracket seats + up to 2 reserved human seats
 console.log(`[village] Loaded world: ${worldId} (${worldConfig.raw.name})`);
 
 // --- Load adapter ---
@@ -842,7 +842,7 @@ async function tick() {
 
     await saveState();
   } catch (err) {
-    console.error(`[village] Tick error: ${err.message}`);
+    console.error(`[village] Tick error: ${err.message}\n${err.stack}`);
   } finally {
     tickInProgress = false;
     // Adaptive tick: schedule next tick after a short gap instead of fixed interval
@@ -1218,6 +1218,14 @@ function startTournamentLobby() {
     participants.delete(botName);
     if (state.remoteParticipants) delete state.remoteParticipants[botName];
     delete state.hubBots[botName];
+    // Notify observers so their bot list / seat caches don't accumulate ghosts
+    broadcastEvent({
+      type: 'player_left',
+      botName,
+      displayName,
+      playerCount: Object.keys(state.hubBots).length,
+      maxPlayers: MAX_TABLE_PLAYERS,
+    });
   }
   state.clock.phase = 'waiting';
 
@@ -2941,6 +2949,17 @@ const server = createServer(async (req, res) => {
           }
         }
         return hc;
+      })(),
+      foldedPlayers: (() => {
+        // Authoritative folded state so refresh reflects the actual hand
+        // (log slice may not include earlier fold actions from this hand)
+        const out = [];
+        if (state.hand?.players) {
+          for (const [botName, p] of Object.entries(state.hand.players)) {
+            if (p.folded) out.push(botName);
+          }
+        }
+        return out;
       })(),
       maxPlayers: MAX_TABLE_PLAYERS,
       playerCount: Object.keys(state.hubBots || {}).length,
